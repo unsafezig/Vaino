@@ -367,6 +367,44 @@ pub fn setPteUserExecutable(pml4_phys: u64, hhdm: u64, virt: u64) bool {
     return setUserPagePath(pml4_phys, hhdm, virt, true);
 }
 
+// Aseta 4K-lehti-PTE:n writable-bitti (31.5.2 checkpoint-suojaus / -palautus).
+// Huge-lohkoja ei kosketa (false) — checkpoint tukee vain 4K-sivuja;
+// puuttuva polku → false (ei luoda tauluja sivuraiteella).
+pub fn setPteWritable(pml4_phys: u64, hhdm: u64, virt: u64, writable: bool) bool {
+    // Kävele sivutaulut lopulliseen PTE:hen (sama polku kuin getPteRaw).
+    const pml4 = physToVirt(pml4_phys, hhdm);
+    const pml4e = &pml4[pml4Index(virt)];
+    // PML4-merkintä puuttuu tai huge (ei validi tasolla).
+    if (pml4e.present == 0 or pml4e.huge == 1) return false;
+    const pdpt = physToVirt(pml4e.physicalAddr(), hhdm);
+    const pdpte = &pdpt[pdptIndex(virt)];
+    // PDPT-merkintä puuttuu tai 1G-lohko (ei 4K).
+    if (pdpte.present == 0 or pdpte.huge == 1) return false;
+    const pd = physToVirt(pdpte.physicalAddr(), hhdm);
+    const pde = &pd[pdIndex(virt)];
+    // PD-merkintä puuttuu tai 2M-lohko (ei 4K).
+    if (pde.present == 0 or pde.huge == 1) return false;
+    const pt = physToVirt(pde.physicalAddr(), hhdm);
+    const pte = &pt[ptIndex(virt)];
+    // Lehti puuttuu.
+    if (pte.present == 0) return false;
+    // Lue-muokkaa-kirjoita raakana (vain bitti 1 vaihtuu).
+    const raw: *u64 = @ptrCast(pte);
+    // Nykyinen arvo.
+    const cur = raw.*;
+    // Uusi arvo W-bitillä tai ilman.
+    const next = if (writable) cur | 0x2 else cur & ~@as(u64, 0x2);
+    // Kirjoita takaisin vain jos muuttuu (turha flush vältetään).
+    if (next != cur) {
+        // Tallenna muokattu merkintä.
+        raw.* = next;
+        // Invalidoi TLB-merkintä tälle sivulle.
+        flushTlb(virt);
+    }
+    // Onnistui.
+    return true;
+}
+
 // TLB flush yhdelle sivulle — pakollinen PTE-muutoksen jälkeen.
 pub fn flushTlb(virt: u64) void {
     // invlpg invalidoi yhden sivun TLB-merkinnän.

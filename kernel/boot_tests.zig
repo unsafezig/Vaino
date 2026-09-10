@@ -281,8 +281,8 @@ pub fn runAll() void {
     const vsl_fs_boot = @import("syscall/vsl_fs_syscall.zig");
     vsl_fs_boot.runBootTest();
     betweenSuites();
-    // 31.5.1 — snapshot-inventaario: VSL:n PML4-kävely + ankkuri + rajaus.
-    const snapshot_boot = @import("snapshot.zig");
+    // 31.5.1/31.5.2 — snapshot-inventaario + checkpoint (syscall-polku).
+    const snapshot_boot = @import("syscall/snapshot_syscall.zig");
     snapshot_boot.runBootTest();
     betweenSuites();
     // Vaihe 33 — self-heal: diagnostiikka + validointi + hot-swap (sama pid).

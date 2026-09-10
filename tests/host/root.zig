@@ -180,3 +180,8 @@ test {
 test {
     _ = @import("snapshot_test.zig");
 }
+
+// Tuo snapshot-checkpoint-säilön yksikkötestit (31.5.2, kehyksettömät polut).
+test {
+    _ = @import("snapshot_store_test.zig");
+}

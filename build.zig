@@ -70,6 +70,23 @@ pub fn build(b: *std.Build) void {
     });
     plugin_manifest_kernel_dep.single_threaded = true;
     kernel_mod.addImport("plugin_manifest", plugin_manifest_kernel_dep);
+    // 31.5.1/31.5.2 — snapshot-ydin kerneliin (sama jaettu instanssi kuin
+    // snapshot.zig käyttää — suhteellinen tuplaus on Zig 0.16:ssa virhe).
+    const snapshot_core_kernel_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/snapshot_core.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    snapshot_core_kernel_mod.single_threaded = true;
+    kernel_mod.addImport("snapshot_core", snapshot_core_kernel_mod);
+    // 31.5.2 — checkpoint-säilön ydin kerneliin (snapshot.zig käyttää nimellä).
+    const snapshot_ckpt_core_kernel_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/snapshot_ckpt_core.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    snapshot_ckpt_core_kernel_mod.single_threaded = true;
+    kernel_mod.addImport("snapshot_ckpt_core", snapshot_ckpt_core_kernel_mod);
     // Vaihe 34.1/34.2 — TDL-spec + composer-heuristiikka kerneliin.
     // Jaettu `composer_task`-instanssi molemmille (ei kahta tyyppi-instanssia).
     const composer_task_kernel_mod = b.createModule(.{
@@ -1115,6 +1132,14 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("snapshot_core", snapshot_core_host_mod);
+    // 31.5.2 — checkpoint-säilön puhdas taulukko host-testeihin
+    // (riippuvuudeton kuten scope.zig; kehys/PTE-orkestraatio boot-katettu).
+    const snapshot_ckpt_core_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/snapshot_ckpt_core.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("snapshot_ckpt_core", snapshot_ckpt_core_host_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });

@@ -46,6 +46,8 @@ const plugin_manifest = @import("../plugin/manifest.zig");
 const plugin_scope = @import("../plugin/scope.zig");
 // Tuo plugin IPC -yhdyskäytävä — gatewayTransfer nimiavaruuksien välille (Vaihe 31).
 const ns_map = @import("../plugin/ns_map.zig");
+// Tuo snapshot-checkpoint — sys_plugin_checkpoint + unload-reclaim (31.5.2).
+const snapshot = @import("../snapshot.zig");
 
 // Syscall-käsittelijän funktiotyyppi (6 argumenttia, i64 paluu).
 const SyscallFn = *const fn (u64, u64, u64, u64, u64, u64) i64;
@@ -702,10 +704,44 @@ fn sysPluginUnload(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
     const owner = plugin_loader.pluginParent(pid) orelse return abi.ESRCH;
     // Vain lataaja tai boot saa purkaa (ei vieraiden pluginien tappoa).
     if (caller != owner and caller != process.BOOT_PID) return abi.EPERM;
+    // Poista pidin checkpointit ensin (kehykset takaisin + W-bitit palautuvat).
+    _ = snapshot.deleteCheckpointsForPid(pid);
     // Pura: omistetut capsit + slotit + PML4 + pid + rekisteri.
     if (!plugin_loader.unloadPlugin(pid)) return abi.ESRCH;
     // Onnistui.
     return 0;
+}
+
+// sys_plugin_checkpoint — kopioi pluginin user-sivut + W=0-suojaa (31.5.2).
+// ABI: RAX=27, RDI=plugin_pid → cpid tai neg. virhe. Vain lataaja tai boot
+// (sama sääntö kuin unloadissa — vieras ei saa jäädyttää toisen sivuja).
+fn sysPluginCheckpoint(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
+    // Checkpointattavan pluginin pid.
+    const pid = a1;
+    // Ei rekisteröity plugin.
+    if (!plugin_loader.isPlugin(pid)) return abi.ESRCH;
+    // Kutsuja + rekisteröity lataaja oikeustarkistukseen.
+    const caller = process.currentPid();
+    // Lataaja-parent selville.
+    const owner = plugin_loader.pluginParent(pid) orelse return abi.ESRCH;
+    // Vain lataaja tai boot saa checkpointata.
+    if (caller != owner and caller != process.BOOT_PID) return abi.EPERM;
+    // Kopioi + suojaa (korvaa vanhan saman pidin checkpointin).
+    const cpid = snapshot.checkpointPlugin(pid) catch |err| switch (err) {
+        // Ei sivutaulua / huge-lohko / katkennut inventaario → EINVAL.
+        error.NoPageTable => return abi.EINVAL,
+        error.HasHuge => return abi.EINVAL,
+        error.Truncated => return abi.EINVAL,
+        // Kehykset/säilö loppu → ENOMEM.
+        error.NoMemory => return abi.ENOMEM,
+        error.TableFull => return abi.ENOMEM,
+        // PTE-suojaus petti kesken (ei pitäisi tapahtua) → EINVAL.
+        error.NoGuard => return abi.EINVAL,
+        // Checkpoint-id tuntematon (ei checkpoint-polussa) → ESRCH.
+        error.NotFound => return abi.ESRCH,
+    };
+    // Palauta checkpoint-id.
+    return @intCast(cpid);
 }
 
 // Dispatch-taulukko — indeksi = syscall-numero (max 31).
@@ -764,6 +800,8 @@ const handlers: [32]?SyscallFn = blk: {
     table[@intCast(abi.SYS_plugin_unload)] = sysPluginUnload;
     // Rekisteröi sys_plugin_transfer (gateway-siirto, Vaihe 31).
     table[@intCast(abi.SYS_plugin_transfer)] = sysPluginTransfer;
+    // Rekisteröi sys_plugin_checkpoint (sivukopio + W=0-suojaus, 31.5.2).
+    table[@intCast(abi.SYS_plugin_checkpoint)] = sysPluginCheckpoint;
     // Palauta valmis taulukko.
     break :blk table;
 };

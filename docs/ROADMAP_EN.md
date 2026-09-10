@@ -710,12 +710,19 @@ zig build boot-test
 | # | Task | File | Status |
 |---|------|------|--------|
 | 31.5.1 | Snapshot struct + page-table walk (U/S-bit boundary, not half) | `kernel/snapshot_core.zig`, `kernel/snapshot.zig` | ✅ pure index/leaf math + freestanding 4-level walk + `Snapshot walk OK` boot test (VSL PML4 anchor, supervisor-skip proof) |
-| 31.5.2 | `sys_plugin_checkpoint(slot)` → dump+W=0 guard | `kernel/syscall/snapshot_syscall.zig` | ⬜ next (needs 31.5.1 inventory — done) |
+| 31.5.2 | `sys_plugin_checkpoint(pid)` → dump+W=0 guard | `kernel/snapshot.zig` (store+copy+guard), `kernel/syscall/dispatch.zig` (`SYS_plugin_checkpoint=27`), `kernel/syscall/snapshot_syscall.zig` | ✅ PMM-frame copies + per-page W-clear/invlpg + replace semantics + unload-reclaim + `Snapshot checkpoint OK` (copy memcmp + guard set/restore proof, 0 leaks) |
 | 31.5.3 | `sys_plugin_restore(slot, id)` → remap + restore slots/regs | `kernel/syscall/restore_syscall.zig` | ⬜ |
 | 31.5.4 | Incremental snapshot (dirty-page tracking via #PF) | `kernel/snapshot_delta.zig` | ⬜ |
 | 31.5.5 | Watchdog: auto-restore on crash | `kernel/plugin_watchdog.zig` | ⬜ |
 
 **Dependency**: Phase 25 (page-table per-process). Hardest single sub-phase in Eeden stretch.
+
+**31.5.2 implementation summary (2026-09-10):**
+- **Store split** (`kernel/snapshot_ckpt_core.zig`, zero imports like `scope.zig`): fixed 4-slot table, `allocSlot/findForPid/releaseSlot/pageVirt/pageFrame/pageWasWritable/pageCount` — host-tested (3 tests: empty, alloc/find/reuse, full-rejects-fifth). Reason: importing frame/PTE code to host trips Zig 0.16's same-file-two-modules rule (hit twice, documented).
+- **Orchestration** (`kernel/snapshot.zig`, +~250 lines): `checkpointPlugin` (walk → refuse huge/truncated → replace old → per page: `pmm.allocFrame` + HHDM `memcpy` + `paging.setPteWritable(false)` + invlpg; any failure rolls back frames + W-bits), `deleteCheckpoint` (W-restore with PML4-staleness check for future swap + frame free), `deleteCheckpointsForPid` (unload-reclaim, called from `sysPluginUnload` — no loader cycle since the boot test moved to `snapshot_syscall.zig`).
+- **Syscall** (`SYS_plugin_checkpoint=27`, slot 28 reserved for restore): BOOT-or-parent rule mirroring unload (ESRCH ghost, EPERM stranger); `NoPageTable/HasHuge/Truncated/NoGuard→EINVAL`, `NoMemory/TableFull→ENOMEM`. Fuzz core marks 27 registered+dangerous.
+- **Boot test** (`kernel/syscall/snapshot_syscall.zig`, walk test moved here verbatim): ghost→ESRCH, cpid>0, page-count==inventory, byte-memcmp of copies vs live, W-bit cleared on a writable page, delete restores W + count==0, unload clean → `Snapshot checkpoint OK`.
+- **Verification:** `zig build test` 159/159, `zig build` + `-Dboot=full` clean, 3× QEMU green with `Snapshot checkpoint OK`, 0 `[ERR]`, downstream suites (heal/federate/scheduler) unaffected.
 
 #### Phase 32 — Plugin Ecosystem & Untrusted Distribution ✅
 
@@ -1100,6 +1107,8 @@ host tests + code review, not on QEMU): `Plugin heal validation OK`,
 `Plugin diagnostics OK`, `Hot-swap replaced plugin`, `Self-heal OK`
 (Phase 33); `Uptime plugin migrated A->B`, `Node A left`,
 `Failover: uptime plugin replicated on B`, `Federated cluster OK` (Phase 35).
+**Update 2026-09-10: all of the above observed in 3× green QEMU runs after
+the K1/K4 fixes — the ✅ now rests on QEMU evidence.**
 
 **K2 mechanism:** every `runBootTest()` returns `void`; failures only `log.err`
 and `return`. `runAll()` ends with unconditional `log.info("All boot tests OK")`,
@@ -1165,9 +1174,9 @@ indistinguishable from a green boot in CI.
 ```
 ✅ DONE → Phases 0–37: Foundation … Eeden Gate (all green, QEMU serials pending CI)
 ✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
-✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) — 3× green QEMU, 0 [ERR]
+✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) — 3× green QEMU, 0 [ERR]
    ↓
-⬜ NEXT → 31.5.2 `sys_plugin_checkpoint` (page-copy + W=0 guard on the 31.5.1 inventory)
+⬜ NEXT → 31.5.3 `sys_plugin_restore` (remap frames + restore slots/regs from 31.5.2 inventory)
    ↓
 ⬜ THEN → Phase 41 — VSL-3 snapshot-ready state descriptor (needs 31.5.2+)
    ↓
