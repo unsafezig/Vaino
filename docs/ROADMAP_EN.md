@@ -712,7 +712,7 @@ zig build boot-test
 | 31.5.1 | Snapshot struct + page-table walk (U/S-bit boundary, not half) | `kernel/snapshot_core.zig`, `kernel/snapshot.zig` | ✅ pure index/leaf math + freestanding 4-level walk + `Snapshot walk OK` boot test (VSL PML4 anchor, supervisor-skip proof) |
 | 31.5.2 | `sys_plugin_checkpoint(pid)` → dump+W=0 guard | `kernel/snapshot.zig` (store+copy+guard), `kernel/syscall/dispatch.zig` (`SYS_plugin_checkpoint=27`), `kernel/syscall/snapshot_syscall.zig` | ✅ PMM-frame copies + per-page W-clear/invlpg + replace semantics + unload-reclaim + `Snapshot checkpoint OK` (copy memcmp + guard set/restore proof, 0 leaks) |
 | 31.5.3 | `sys_plugin_restore(pid)` → copy-back + W-restore (slots/regs deferred, documented) | `kernel/snapshot.zig` (`restorePlugin`), `kernel/syscall/dispatch.zig` (`SYS_plugin_restore=28`), `kernel/syscall/snapshot_syscall.zig` | ✅ frame→live memcmp-verified copy-back + original-W restore (runnable, repeatable) + stale-table/mapping refusals + `Snapshot restore OK` (2× damage/restore + ghost-ESRCH) |
-| 31.5.4 | Incremental snapshot (dirty-page tracking via #PF) | `kernel/snapshot_delta.zig` | ⬜ |
+| 31.5.4 | Incremental snapshot (dirty-page tracking via #PF) | `kernel/snapshot.zig` (`handleWriteFault`, incremental path), `kernel/arch/x86_64/idt.zig` (returnable #PF wrapper), `userland/dirty_test/` (id=2) | ✅ fault-and-continue (#PF→dirty+W=1→iret) + dirty-gated re-copy (same cpid) + genuine ring-3 write-fault end-to-end (`dty` + `Dirty tracking OK`) |
 | 31.5.5 | Watchdog: auto-restore on crash | `kernel/plugin_watchdog.zig` | ⬜ |
 
 **Dependency**: Phase 25 (page-table per-process). Hardest single sub-phase in Eeden stretch.
@@ -730,6 +730,15 @@ zig build boot-test
 - **Syscall** (`SYS_plugin_restore=28`): same BOOT-or-parent rule as checkpoint; `NoCheckpoint→ESRCH`, rest→`EINVAL`. Fuzz core: 28 registered+dangerous.
 - **Boot test:** damage first page (0xA5) → `sys_plugin_restore` → memcmp + W-runnable proof → damage (0x5A) → restore again (repeatability) → ghost→ESRCH → `Snapshot restore OK`.
 - **Verification:** host still 159/159 (no new pure logic — boot-covered), freestanding clean, 3× QEMU green with `Snapshot restore OK`, 0 `[ERR]`.
+
+**31.5.4 implementation summary (2026-09-10):**
+- **Dirty bit** (`CkptPage.dirty` in the pure core): set by the fault path, cleared by incremental re-copy; `dirtyCount` accessor for tests. Host-tested lifecycle (inject → mark → count → clear).
+- **Fault path** (`snapshot.handleWriteFault`, called from IDT): CR3-matched checkpoint + virt-matched page → dirty=true + `setPteWritable(true)` + invlpg + counter, returns true (silent — K2-clean); anything else → false → legacy log+halt. Stale-PTE failure rolls the flag back (no fault livelock).
+- **Returnable #PF wrapper** (`idt.zig`): `pageFaultHandle` (bool) runs first, requires P+W+U bits (kernel/SMAP faults stay fatal); true → drop error code + `iretq` (write retries successfully); false → legacy path.
+- **Incremental checkpoint:** same `sys_plugin_checkpoint` syscall returns the SAME cpid when a checkpoint exists — re-copies only dirty pages, re-guards them, defensively re-guards clean pages; layout change → `LayoutChanged` (caller deletes + full checkpoints).
+- **End-to-end proof** (`userland/dirty_test/`, embedded_id=2, stack slot 119, `@0x90095000`): writes its own guarded stack in ring 3 → genuine #PF → `dty` serial → `dirtyCount==1` + fault counter (hardware proof, not direct call) → incremental (same cpid, count 0) → unload → `Dirty tracking OK`.
+- **Enablers fixed on the way (K5/K6 above):** this was the first ring-3 exception in kernel history — its delivery path (IDT bytes, TSS layout) had never been exercised.
+- **Verification:** host 160/160, freestanding clean, 3× QEMU green with `Dirty tracking OK`, 0 `[ERR]`.
 
 #### Phase 32 — Plugin Ecosystem & Untrusted Distribution ✅
 
@@ -1086,6 +1095,8 @@ shared-port healing works today (Phase 33 pattern).
 | **K1** | High | `plugin_heal_syscall.zig:90`, `federate.zig:126` | BOOT_PID slot exhaustion aborts the heal + federate boot tests mid-run | ✅ fixed 2026-09-10 (suite-boundary wipe + hole-safe allocator, see below) |
 | **K2** | High | `kernel/boot_tests.zig:209` | `All boot tests OK` prints unconditionally — no failure propagation, CI green on partial runs | ✅ fixed 2026-09-10 (err-count verdict + non-zero QEMU exit + CI markers) |
 | **K4** | Critical | `arch/x86_64/usermode_jump.S`, `arch/x86_64/usermode.zig` | ring-3 round trip clobbers callee-saved regs (rbp) → wild writes into .bss (syscall-stack canary) | ✅ fixed 2026-09-10 (save/restore rbx/rbp/r12-r15, see below) |
+| **K5** | Critical | `arch/x86_64/idt.zig` (`init` loop) | vectorized init loop swaps ist/type bytes in ALL its gates → ring-3 exception delivery dies | ✅ fixed 2026-09-10 (scalar loop + read-back gate check, see below) |
+| **K6** | Critical | `arch/x86_64/gdt.zig` (`Tss` struct) | `extern struct` inserts 4 B padding after `reserved0` → CPU reads garbage rsp0 → #SS on first ring-3 exception | ✅ fixed 2026-09-10 (`packed struct`, see below) |
 
 **K1 attack path (no attacker needed — the test chain does it to itself):**
 each boot test installs BOOT-owned capability slots (`installSlotForPid(BOOT_PID, …)`)
@@ -1175,15 +1186,34 @@ indistinguishable from a green boot in CI.
   the tunnel correctly checks replay-window before MAC (`Replay` is the right
   answer — the host test already encoded this). Test now seals fresh then
   tampers, matching `federate_test.zig`.
+- **K5-fix (ring-3 exception delivery, part 1 — IDT bytes):** GDB memdump of
+  IDT[14] showed `ist=0x8e/type=0x00` (swapped) in every gate the `init()`
+  zip+cmove loop wrote, while `registerHandler`-written gates (timer/IRQ)
+  read correct — same constructor, different emitter. Disassembly of the loop
+  showed a vectorized predicated store sequence; root cause class: codegen
+  around the zipped multi-iterator (kept as documented suspicion, not proven
+  compiler bug). Fix: scalar indexed loop (same shape as `registerHandler`)
+  + `gateBytesOk` read-back check in `init()` (fail-fast halt, never silent).
+  Verified by GDB byte-dump (`ist=0/type=0x8e`) in the new binary.
+- **K6-fix (ring-3 exception delivery, part 2 — TSS layout):** `Tss` was the
+  only hardware struct declared `extern struct`; Zig inserts 4 B padding
+  after `reserved0: u32`, shifting `rsp0` from hardware offset +4 to +8, so
+  the CPU read garbage (non-canonical) as the ring-3 exception stack →
+  `#SS → double → triple fault` on the FIRST ring-3 exception ever (QEMU
+  `-d int` trace + register dump evidence). All other hardware structs were
+  already `packed`. Fix: `packed struct` (+ comment forbidding revert);
+  `@sizeOf` 112→106 keeps the TR limit valid. Verified: 3× green QEMU with
+  a genuine ring-3 write-fault handled, continued (`dty`), and measured
+  (`dirtyCount==1`) — the first exception ever delivered from ring 3.
 
 ### Recommended Execution Order
 
 ```
 ✅ DONE → Phases 0–37: Foundation … Eeden Gate (all green, QEMU serials pending CI)
 ✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
-✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) — 3× green QEMU, 0 [ERR]
+✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) + K5 (IDT loop) + K6 (TSS packing) + 31.5.4 (dirty tracking) — 3× green QEMU, 0 [ERR]
    ↓
-⬜ NEXT → 31.5.4 incremental snapshot (dirty-page tracking via #PF on the W=0 guard) + Phase 41 VSL-3 (needs restore — now unblocked)
+⬜ NEXT → 31.5.5 watchdog (auto-restore on crash via dirty/counter signals) + Phase 41 VSL-3 (fully unblocked: checkpoint+restore+dirty all live)
    ↓
 ⬜ THEN → Phase 41 — VSL-3 snapshot-ready state descriptor (needs 31.5.2+)
    ↓

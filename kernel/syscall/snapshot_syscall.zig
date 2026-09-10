@@ -367,4 +367,135 @@ pub fn runBootTest() void {
     }
     // Checkpoint-kopio + W=0-suojaus + reversiibeli purku OK.
     log.info("Snapshot checkpoint OK");
+
+    // --- 31.5.4: aito dirty-fault ring 3:ssa + inkrementaalinen checkpoint ---
+    // Lataa dirty-test-ELF (kirjoittaa omaan pinoonsa → #PF odotettu).
+    const dpid_raw = dispatch.invoke(abi.SYS_plugin_load, loader.DIRTY_EMBEDDED_ID, 1, scope.MASK_SEND, scope.TYPE_PORT | scope.TYPE_MEMORY, scope.MASK_SEND | scope.MASK_RECV | scope.MASK_MAP | scope.MASK_READ, 4);
+    // Varmista positiivinen plugin-pid.
+    if (dpid_raw <= 1) {
+        // Dirty-lataus epäonnistui.
+        log.err("Dirty load failed");
+        return;
+    }
+    // Dirty-pid u64:na.
+    const dpid: u64 = @intCast(dpid_raw);
+    // Checkpoint dirty-pluginista (täysi kopio + W=0-suojaus).
+    const dcpid_raw = dispatch.invoke(abi.SYS_plugin_checkpoint, dpid, 0, 0, 0, 0, 0);
+    // Varmista positiivinen cpid.
+    if (dcpid_raw <= 0) {
+        // Checkpoint epäonnistui.
+        log.err("Dirty checkpoint failed");
+        // Siivoa lataus.
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Checkpoint-id u32:na.
+    const dcpid: u32 = @intCast(dcpid_raw);
+    // Ei likaisia sivuja vielä (vasta checkpointattu).
+    const d0 = snapshot.checkpointDirtyCount(dcpid) orelse {
+        // Laskuri puuttuu heti luonnin jälkeen.
+        log.err("Dirty count missing");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    };
+    if (d0 != 0) {
+        // Tuore checkpoint ei ole puhdas.
+        log.err("Dirty count not zero");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // #PF-laskuri ennen ajoa (todistaa laitepolun, ei suoraa kutsua).
+    const faults_before = snapshot.dirtyFaultCount();
+    // Aja dirty-plugin ring 3:ssa: pinokirjoitus → AITO #PF → handler
+    // merkitsee likaiseksi + myöntää kirjoituksen → "dty" jatkuu.
+    if (!loader.runPlugin(dpid)) {
+        // Ajo epäonnistui (faulttia ei käsitelty).
+        log.err("Dirty run failed");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // #PF-käsittelijä todella ajoi (laski faultin).
+    if (snapshot.dirtyFaultCount() <= faults_before) {
+        // Yksikään fault ei kulkenut handlerin läpi.
+        log.err("Dirty fault not counted");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Tasan yksi sivu likaantui (pinokirjoitus — yksi 4K-sivu).
+    const d1 = snapshot.checkpointDirtyCount(dcpid) orelse {
+        // Laskuri katosi ajon aikana.
+        log.err("Dirty count lost");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    };
+    if (d1 != 1) {
+        // Väärä likamäärä (odota 1).
+        log.err("Dirty count not one");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Inkrementaalinen checkpoint samalla syscallilla: sama cpid takaisin,
+    // likalippu nollautuu (kopioitu uudelleen + suojattu).
+    const dcpid2_raw = dispatch.invoke(abi.SYS_plugin_checkpoint, dpid, 0, 0, 0, 0, 0);
+    // Varmista sama cpid (inkrementti, ei uusi checkpoint).
+    if (dcpid2_raw != dcpid_raw) {
+        // Uusi cpid täyden kopion sijaan — inkrementti ei toiminut.
+        log.err("Dirty cpid changed");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Likamäärä nollautunut inkrementin jälkeen.
+    const d2 = snapshot.checkpointDirtyCount(dcpid) orelse {
+        // Laskuri katosi inkrementissä.
+        log.err("Dirty recount missing");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    };
+    if (d2 != 0) {
+        // Lika ei nollautunut inkrementissä.
+        log.err("Dirty not cleared");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(dcpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Siivoa checkpoint + pura LIFO-puhtaasti.
+    if (!snapshot.deleteCheckpoint(dcpid)) {
+        // Poisto epäonnistui.
+        log.err("Dirty delete failed");
+        // Siivoa lataus.
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Säilö tyhjä (ei vuotoja).
+    if (snapshot.checkpointCount() != 0) {
+        // Checkpoint jäi roikkumaan.
+        log.err("Dirty leak");
+        // Siivoa lataus.
+        _ = dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0);
+        return;
+    }
+    if (dispatch.invoke(abi.SYS_plugin_unload, dpid, 0, 0, 0, 0, 0) != 0) {
+        // Purku epäonnistui.
+        log.err("Dirty unload failed");
+        return;
+    }
+    // Aito ring-3-fault + dirty-merkintä + inkrementti + purku OK.
+    log.info("Dirty tracking OK");
 }

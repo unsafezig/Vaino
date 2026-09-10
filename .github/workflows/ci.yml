@@ -230,6 +230,16 @@ jobs:
             exit 1
           }
 
+          grep -q "Snapshot restore OK" boot-full.log || {
+            echo "::error::Missing 'Snapshot restore OK' marker (31.5.3 aborted?)."
+            exit 1
+          }
+
+          grep -q "Dirty tracking OK" boot-full.log || {
+            echo "::error::Missing 'Dirty tracking OK' marker (31.5.4 aborted?)."
+            exit 1
+          }
+
           echo "Full boot verification OK."
 
       # ------------------------------------------------------------

@@ -14,6 +14,9 @@ const log = @import("../../lib/log.zig");
 const uart = @import("../../drivers/char/uart.zig");
 // PIT-tickien laskuri — taustatimer Vaihe 3:lle (pit_ticks.zig + timer_irq.S).
 const pit_ticks = @import("../../lib/pit_ticks.zig");
+// Tuo snapshot dirty-seuranta — kirjoitussuojaus-faultit (31.5.4).
+// Kiertoa ei ole: snapshot ei importtaa idt:tä (vmm/paging/pmm/process/log).
+const snapshot = @import("../../snapshot.zig");
 
 // IDT-merkintä — 128-bittinen kuvaus yhdestä keskeytys/poikkeusvektorista.
 const IdtEntry = packed struct {
@@ -124,16 +127,45 @@ export fn pageFaultHandlerC(fault_addr: u64, error_code: u64) callconv(.c) noret
     while (true) {}
 }
 
+// Page fault -esitarkistus C-puolella (31.5.4): kirjoitussuojaus-fault
+// checkpointatussa plugin-avaruudessa merkitään likaiseksi ja kirjoitus
+// myönnetään (fault-and-continue) — true = käsitelty, ei lokia (K2 laskee
+// vain todelliset viat). Kaikki muu → false → vanha log+halt-poku.
+export fn pageFaultHandle(fault_addr: u64, error_code: u64) callconv(.c) bool {
+    // Vaadi present-sivu (bit 0): checkpoint-suoja on protection-fault,
+    // ei not-present. Puuttuva sivu on aina todellinen vika.
+    if ((error_code & 1) == 0) return false;
+    // Vaadi kirjoitus (bit 1): lukufault suojattuun sivuun on todellinen vika
+    // (R-sivut eivät kuulu dirty-seurantaan).
+    if ((error_code & 2) == 0) return false;
+    // Vaadi käyttäjätila (bit 2): kernel-tilan fault (ml. SMAP) on todellinen
+    // vika — kernel kirjoittaa HHDM-aliasten kautta ilman faultia.
+    if ((error_code & 4) == 0) return false;
+    // Vikatilanteen CR3 (faultaava avaruus — yleensä pluginin PML4).
+    const cr3 = paging.getCr3();
+    // Delegoi snapshotille (sivun perusosoite, CR3-täsmäys).
+    return snapshot.handleWriteFault(cr3, fault_addr);
+}
+
 // Page fault (#14) — naked wrapper lukee CR2 ja virhekoodin pinolta.
+// Käsitelty dirty-fault palaa iretq:lla (kirjoitus yrittää uudelleen,
+// nyt W=1); käsittelemätön jatkaa vanhalla log+halt-polulla.
 export fn pageFaultHandler() callconv(.naked) noreturn {
     // Poista keskeytykset heti — estää uudelleenpage faultin handlerissa.
     // Lue virhekoodi pinosta (CPU pushaa sen ennen handleria).
     // Lue CR2 — page fault -virtuaaliosoite.
-    // Kutsu C-käsittelijää: RDI=fault_addr, RSI=error_code (SysV ABI).
+    // Kutsu esitarkistusta: RDI=fault_addr, RSI=error_code (SysV ABI).
+    // Paluu al=1 → pudota virhekoodi pinolta + iretq; al=0 → vanha polku.
     asm volatile (
         \\cli
         \\mov (%%rsp), %%rsi
         \\mov %%cr2, %%rdi
+        \\call pageFaultHandle
+        \\test %%al, %%al
+        \\jz .pf_unhandled
+        \\add $8, %%rsp
+        \\iretq
+        \\.pf_unhandled:
         \\call pageFaultHandlerC
         \\cli
         \\hlt
@@ -169,7 +201,34 @@ pub fn keyboardHandlerAddr() u64 {
     return @intFromPtr(&keyboardIrqHandler);
 }
 
+// Tarkista porttimerkinnän tavutus raaoista qwordeista (puhdas bittivertailu).
+// K5-regressiotesti koodissa: init-silmukan vektorointi sekoitti ist/type-
+// tavut (ist=0x8e/type=0x00), mikä kaatoi KAIKKI ring-3-poikkeukset #SS:ään.
+// Tarkistus lukee takaisin sen mitä CPU lukee (offset/selector/ist/type).
+pub fn gateBytesOk(lo: u64, hi: u64, handler: u64) bool {
+    // offset_low (bitit 0..15) täsmää handleriin.
+    if ((lo & 0xFFFF) != (handler & 0xFFFF)) return false;
+    // Selectori on kernel code (bitit 16..31).
+    if (((lo >> 16) & 0xFFFF) != gdt.KERNEL_CODE_SEL) return false;
+    // IST-indeksi 0 (bitit 32..39) — ei erillistä pinoa.
+    if (((lo >> 32) & 0xFF) != 0) return false;
+    // Gate type present+DPL0+interrupt (bitit 40..47 = 0x8E).
+    if (((lo >> 40) & 0xFF) != 0x8E) return false;
+    // offset_mid (bitit 48..63) täsmää handleriin.
+    if (((lo >> 48) & 0xFFFF) != ((handler >> 16) & 0xFFFF)) return false;
+    // offset_high (bitit 64..95) täsmää handleriin.
+    if ((hi & 0xFFFF_FFFF) != ((handler >> 32) & 0xFFFF_FFFF)) return false;
+    // Kaikki kentät oikein.
+    return true;
+}
+
 // Alusta IDT — page fault #14 oikea käsittelijä, muut stub.
+// HUOM (K5): täytä skalaarisilmukalla kuten registerHandler — Zig 0.16:n
+// vektorisoima zip+cmove-silmukka sekoitti ist/type-tavut (kaikki initin
+// kirjoittamat merkinnät lukivat ist=0x8e/type=0x00 → #PF-toimitus kaatui
+// #SS:ään; GDB-watchpoint + objdump todisteena). Skalaaripolku varmennettu
+// tavuittain QEMU:ssa. Älä "optimoi" tätä takaisin zip-muotoon ilman
+// tavuvertailua (katso verifyGate alla).
 pub fn init() void {
     // Osoite yleiseen stub-handleriin kaikille muille vektoreille.
     const stub_addr: u64 = @intFromPtr(&isrStub);
@@ -177,16 +236,32 @@ pub fn init() void {
     const pf_addr: u64 = @intFromPtr(&pageFaultHandler);
     // 64-bit interrupt gate, present, DPL 0 (0x8E).
     const attr: u8 = 0x8E;
-    // Täytä kaikki 256 IDT-merkintää.
-    for (&idt, 0..) |*entry, i| {
+    // Täytä kaikki 256 IDT-merkintää skalaarisesti indeksillä.
+    var i: usize = 0;
+    while (i < idt.len) : (i += 1) {
         // Vektori 14 = page fault — käytä erikoiskäsittelijää.
         if (i == 14) {
             // Rekisteröi pageFaultHandler vektoriin #14.
-            entry.* = IdtEntry.init(pf_addr, gdt.KERNEL_CODE_SEL, attr);
+            idt[i] = IdtEntry.init(pf_addr, gdt.KERNEL_CODE_SEL, attr);
         } else {
             // Kaikki muut vektorit → stub joka pysäyttää CPU:n.
-            entry.* = IdtEntry.init(stub_addr, gdt.KERNEL_CODE_SEL, attr);
+            idt[i] = IdtEntry.init(stub_addr, gdt.KERNEL_CODE_SEL, attr);
         }
+    }
+    // Lue takaisin kriittinen portti #14 (fail-fast, ei hiljaista korruptiota).
+    // Lue raaka qword-pari taulukosta tavuosoittimella (sama tavutus jonka
+    // CPU lukee; align(1) — taulukon tasaus ei ole taattu 8:ksi).
+    const gate_bytes: [*]const u8 = @ptrCast(&idt[14]);
+    const lo14: u64 = @as(*align(1) const u64, @ptrCast(gate_bytes)).*;
+    const hi14: u64 = @as(*align(1) const u64, @ptrCast(gate_bytes + 8)).*;
+    if (!gateBytesOk(lo14, hi14, pf_addr)) {
+        // Väärä tavutus — pysäytä heti selkeällä viestillä (K2 ei laske
+        // infoa, joten tämä ei vääristä boot-verdictiä).
+        log.info("IDT gate 14 corrupt");
+        // Pysäytä CPU — jatko ilman #PF-käsittelijää olisi epärehellistä.
+        asm volatile ("cli; hlt");
+        // Ei saavuteta.
+        while (true) {}
     }
     // IDT-koko tavuina miinus yksi (x86 vaatimus).
     idt_ptr.limit = @sizeOf(@TypeOf(idt)) - 1;

@@ -713,6 +713,8 @@ fn sysPluginUnload(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
 }
 
 // sys_plugin_checkpoint — kopioi pluginin user-sivut + W=0-suojaa (31.5.2).
+// Uusi checkpoint täydellä kopiolla; olemassaoleva päivittyy
+// inkrementaalisesti (vain likaiset, 31.5.4) samalla cpid:llä.
 // ABI: RAX=27, RDI=plugin_pid → cpid tai neg. virhe. Vain lataaja tai boot
 // (sama sääntö kuin unloadissa — vieras ei saa jäädyttää toisen sivuja).
 fn sysPluginCheckpoint(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
@@ -726,7 +728,7 @@ fn sysPluginCheckpoint(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
     const owner = plugin_loader.pluginParent(pid) orelse return abi.ESRCH;
     // Vain lataaja tai boot saa checkpointata.
     if (caller != owner and caller != process.BOOT_PID) return abi.EPERM;
-    // Kopioi + suojaa (korvaa vanhan saman pidin checkpointin).
+    // Kopioi + suojaa (täysi ilman checkpointia, inkrementti jos on).
     const cpid = snapshot.checkpointPlugin(pid) catch |err| switch (err) {
         // Ei sivutaulua / huge-lohko / katkennut inventaario → EINVAL.
         error.NoPageTable => return abi.EINVAL,
@@ -735,8 +737,10 @@ fn sysPluginCheckpoint(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
         // Kehykset/säilö loppu → ENOMEM.
         error.NoMemory => return abi.ENOMEM,
         error.TableFull => return abi.ENOMEM,
-        // PTE-suojaus petti kesken (ei pitäisi tapahtua) → EINVAL.
+        // PTE-suojaus petti / taulu tai kartoitus vaihtunut → EINVAL.
         error.NoGuard => return abi.EINVAL,
+        error.StaleTable => return abi.EINVAL,
+        error.LayoutChanged => return abi.EINVAL,
         // Checkpoint-id tuntematon (ei checkpoint-polussa) → ESRCH.
         error.NotFound => return abi.ESRCH,
     };

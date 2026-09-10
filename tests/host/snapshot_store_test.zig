@@ -43,8 +43,7 @@ test "ckpt alloc find release reuse" {
     try std.testing.expect(ckpt.releaseSlot(c2));
 }
 
-test "ckpt table full rejects fifth" {
-    // Täytä kaikki 4 paikkaa eri pideillä.
+test "ckpt table full rejects fifth" {    // Täytä kaikki 4 paikkaa eri pideillä.
     var ids: [4]u32 = undefined;
     var i: usize = 0;
     while (i < 4) : (i += 1) {
@@ -62,6 +61,44 @@ test "ckpt table full rejects fifth" {
     try std.testing.expect(ckpt.releaseSlot(ids[0]));
     try std.testing.expect(ckpt.releaseSlot(ids[2]));
     try std.testing.expect(ckpt.releaseSlot(ids[3]));
+    try std.testing.expect(ckpt.releaseSlot(c));
+    try std.testing.expectEqual(@as(usize, 0), ckpt.count());
+}
+
+test "ckpt dirty flag lifecycle" {
+    // Varaa paikka + teeskentele yksi sivu (suora taulukkomuokkaus testissä:
+    // page_count nostetaan käsin — orkestraatio täyttää normaalisti).
+    const c = ckpt.allocSlot(55, 0x5000) orelse return error.TestFailed;
+    // Tuntematon cpid/indeksi → null/false.
+    try std.testing.expect(ckpt.isDirty(99, 0) == null);
+    try std.testing.expect(!ckpt.setDirty(99, 0, true));
+    try std.testing.expect(ckpt.dirtyCount(99) == null);
+    // Tyhjä paikka: ei likaisia.
+    try std.testing.expectEqual(@as(usize, 0), ckpt.dirtyCount(c) orelse return error.TestFailed);
+    // Rajat ulkona (page_count 0) → null/false.
+    try std.testing.expect(ckpt.isDirty(c, 0) == null);
+    try std.testing.expect(!ckpt.setDirty(c, 0, true));
+    // Injektoi kaksi feikkisivua suoraan paikkaan (boot-täyttöä mukaillen).
+    const slot = ckpt.slotByCpid(c) orelse return error.TestFailed;
+    slot.pages[0] = .{ .virt = 0x1000, .frame_phys = 0x2000, .was_writable = true, .dirty = false };
+    slot.pages[1] = .{ .virt = 0x3000, .frame_phys = 0x4000, .was_writable = false, .dirty = false };
+    slot.page_count = 2;
+    // Molemmat puhtaita aluksi.
+    try std.testing.expectEqual(false, ckpt.isDirty(c, 0) orelse return error.TestFailed);
+    try std.testing.expectEqual(@as(usize, 0), ckpt.dirtyCount(c) orelse return error.TestFailed);
+    // Merkitse toinen likaiseksi (fault-polku).
+    try std.testing.expect(ckpt.setDirty(c, 1, true));
+    try std.testing.expectEqual(true, ckpt.isDirty(c, 1) orelse return error.TestFailed);
+    try std.testing.expectEqual(@as(usize, 1), ckpt.dirtyCount(c) orelse return error.TestFailed);
+    // Rajat ulkona edelleen.
+    try std.testing.expect(ckpt.isDirty(c, 2) == null);
+    // Nollaa (inkrementti kopioi + puhdistaa).
+    try std.testing.expect(ckpt.setDirty(c, 1, false));
+    try std.testing.expectEqual(@as(usize, 0), ckpt.dirtyCount(c) orelse return error.TestFailed);
+    // Virt/frame-accessorit toimivat injektoiduilla.
+    try std.testing.expectEqual(@as(u64, 0x1000), ckpt.pageVirt(c, 0) orelse return error.TestFailed);
+    try std.testing.expectEqual(@as(u64, 0x4000), ckpt.pageFrame(c, 1) orelse return error.TestFailed);
+    // Siivoa.
     try std.testing.expect(ckpt.releaseSlot(c));
     try std.testing.expectEqual(@as(usize, 0), ckpt.count());
 }

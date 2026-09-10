@@ -794,6 +794,29 @@ pub fn build(b: *std.Build) void {
     copy_vsl_elf.addFileArg(embedded_vsl_path);
     copy_vsl_elf.step.dependOn(&vsl_exe.step);
 
+    // --- Dirty-test ELF (31.5.4) — upotetaan kerneliin embedded_id=2 ---
+    const dirty_test_mod = b.createModule(.{
+        .root_source_file = b.path("userland/dirty_test/main.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    dirty_test_mod.red_zone = false;
+    dirty_test_mod.stack_protector = false;
+    dirty_test_mod.single_threaded = true;
+    const dirty_test_exe = b.addExecutable(.{
+        .name = "zinux-dirty-test",
+        .root_module = dirty_test_mod,
+    });
+    dirty_test_exe.setLinkerScript(b.path("userland/dirty_test/user.ld"));
+    dirty_test_exe.root_module.addAssemblyFile(b.path("userland/dirty_test/start.S"));
+    b.installArtifact(dirty_test_exe);
+
+    const embedded_dirty_test_path = b.path("kernel/loader/dirty_test_prog.bin");
+    const copy_dirty_test_elf = b.addSystemCommand(&.{ "cp", "-f" });
+    copy_dirty_test_elf.addFileArg(dirty_test_exe.getEmittedBin());
+    copy_dirty_test_elf.addFileArg(embedded_dirty_test_path);
+    copy_dirty_test_elf.step.dependOn(&dirty_test_exe.step);
+
     const kernel = b.addExecutable(.{
         .name = "zinux-kernel",
         .root_module = kernel_mod,
@@ -830,6 +853,7 @@ pub fn build(b: *std.Build) void {
     kernel.step.dependOn(&copy_plugin_test_elf.step);
     kernel.step.dependOn(&copy_plugin_xfer_test_elf.step);
     kernel.step.dependOn(&copy_vsl_elf.step);
+    kernel.step.dependOn(&copy_dirty_test_elf.step);
     b.installArtifact(kernel);
 
     // --- Host-testit ---

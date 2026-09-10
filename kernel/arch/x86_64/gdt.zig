@@ -51,7 +51,12 @@ const GdtPointer = packed struct {
 var gdt: [7]GdtEntry = undefined;
 
 // 64-bit TSS — ring 3 poikkeukset käyttävät rsp0:aa kernel-pinoksi.
-const Tss = extern struct {
+// TARKKAA: packed, EI extern! Laitteiston TSS-asettelu on tiivis: reserved0
+// (4B) + rsp0 (8B @ offset 4) + ... — extern-struct lisäisi 4 tavua täytettä
+// reserved0:n jälkeen ja siirtäisi rsp0:n offsettiin 8, jolloin CPU lukisi
+// roskaa (K5: ensimmäinen ring-3-poikkeus kaatui #SS:ään; GDB-watchpoint +
+// QEMU-trace todisteena). Kaikki muut laitteistorakenteet ovat jo packed.
+const Tss = packed struct {
     // Varattu — x86_64 TSS aloitus.
     reserved0: u32 = 0,
     // Ring 0 pinon yläreuna kun keskeytys tulee ring 3:sta.

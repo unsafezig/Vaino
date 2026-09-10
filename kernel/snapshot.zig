@@ -250,7 +250,21 @@ pub const CkptError = error{
     NoGuard,
     // Checkpoint-id tuntematon.
     NotFound,
+    // PML4 vaihtunut (inkrementaali stalen tauluun kielletty).
+    StaleTable,
+    // Kartoitus muuttunut (sivumäärä/osoitteet eri kuin checkpointissa).
+    LayoutChanged,
 };
+
+// Käsiteltyjen dirty-faultien laskuri (31.5.4-observability: boot-testi
+// todistaa #PF-polun laskurista, ei pelkästä dirty-lipusta).
+var dirty_faults: u64 = 0;
+
+// Montako kirjoitussuojaus-faultia käsitelty (saturaatio).
+pub fn dirtyFaultCount() u64 {
+    // Palauta laskuri.
+    return dirty_faults;
+}
 
 // Etsi pluginin checkpoint — null jos ei ole (replace-päätös).
 pub fn findCheckpointForPid(pid: u64) ?u32 {
@@ -308,8 +322,9 @@ fn rollbackPartial(cpid: u32, pml4: u64, hhdm: u64, done: usize) void {
     paging.setCr3(paging.getCr3());
 }
 
-// Checkpoint pluginin user-sivut: kopioi kehykset + W=0-suojaa originaalit.
-// Korvaa saman pidin vanhan checkpointin. Palauttaa cpid:n (indeksi+1).
+// Checkpoint pluginin user-sivut: täysi kopio + W=0-suojaus ilman vanhaa,
+// inkrementaalinen päivitys (vain likaiset) jos checkpoint on. Palauttaa
+// cpid:n (sama id inkrementissä).
 pub fn checkpointPlugin(pid: u64) CkptError!u32 {
     // Hae per-process PML4 (I2-eristys).
     const pml4 = process.getPageTable(pid) orelse return CkptError.NoPageTable;
@@ -324,8 +339,11 @@ pub fn checkpointPlugin(pid: u64) CkptError!u32 {
     if (st.huge_pages > 0) return CkptError.HasHuge;
     // Katkennut inventaario: ei osittaista checkpointia.
     if (st.truncated) return CkptError.Truncated;
-    // Korvaa vanha saman pidin checkpoint (yksi totuus per plugin).
-    _ = deleteCheckpointsForPid(pid);
+    // Olemassaoleva checkpoint → inkrementaalinen (vain likaiset, 31.5.4).
+    if (ckpt.findForPid(pid)) |old| {
+        // Päivitä vanha samalla cpid:llä (vakaa tunniste).
+        return checkpointIncremental(pid, old, &snap);
+    }
     // Varaa säilöpaikka (null → täynnä).
     const cpid = ckpt.allocSlot(pid, pml4) orelse return CkptError.TableFull;
     // Hae varattu paikka täyttöä varten.
@@ -348,7 +366,7 @@ pub fn checkpointPlugin(pid: u64) CkptError!u32 {
         // Kehys → fyysinen osoite.
         const fphys = pmm.frameToPhys(frame);
         // Tallenna metatieto heti (rollback löytää sen).
-        slot.pages[k] = .{ .virt = snap.pages[k].virt, .frame_phys = fphys, .was_writable = snap.pages[k].writable };
+        slot.pages[k] = .{ .virt = snap.pages[k].virt, .frame_phys = fphys, .was_writable = snap.pages[k].writable, .dirty = false };
         slot.page_count = k + 1;
         // Kopioi 4 KiB HHDM-ikkunassa (lähde + kohde supervisor-aliaksia).
         const src: [*]const u8 = @ptrFromInt(vmm.physToVirt(snap.pages[k].phys));
@@ -370,6 +388,128 @@ pub fn checkpointPlugin(pid: u64) CkptError!u32 {
     paging.setCr3(paging.getCr3());
     // Palauta cpid.
     return cpid;
+}
+
+// Inkrementaalinen checkpoint (31.5.4): kopioi vain likaiset sivut uudelleen
+// ja suojaa ne; puhtaat (yhä W=0) ohitetaan kehyksineen. Palauttaa saman
+// cpid:n. Kartoituksen muutos (määrä/osoitteet) → LayoutChanged (kutsuja
+// tekee täyden checkpointin deleten kautta — ei hiljaista sekoitusta).
+fn checkpointIncremental(pid: u64, cpid: u32, snap: *Snapshot) CkptError!u32 {
+    // Hae paikka.
+    const slot = ckpt.slotByCpid(cpid) orelse return CkptError.NotFound;
+    // Nykyinen PML4 — stale-portti ennen yhtäkään kirjoitusta.
+    const live_pml4 = process.getPageTable(pid) orelse return CkptError.NoPageTable;
+    // Nolla tai vaihtunut taulu → täysi checkpoint deleten kautta.
+    if (live_pml4 == 0 or live_pml4 != slot.pml4_phys) return CkptError.StaleTable;
+    // HHDM-offset kopiointi-ikkunaan.
+    const hhdm = vmm.hhdm();
+    // Sivumäärän muutos → layout muuttunut (uusi/vapautettu sivu).
+    if (snap.count != slot.page_count) return CkptError.LayoutChanged;
+    // Käy tallennetut sivut, täsmää virt-osoitteella (järjestysvapaa).
+    var i: usize = 0;
+    while (i < slot.page_count) : (i += 1) {
+        // Etsi sama virt inventaariosta.
+        const sv = ckpt.pageVirt(cpid, i) orelse return CkptError.LayoutChanged;
+        var found: ?usize = null;
+        var j: usize = 0;
+        while (j < snap.count) : (j += 1) {
+            // Huge jätetty jo ulos yllä — täsmää vain 4K.
+            if (!snap.pages[j].huge and snap.pages[j].virt == sv) {
+                // Täsmää.
+                found = j;
+                break;
+            }
+        }
+        // Osoite kadonnut inventaariosta → layout muuttunut.
+        const ji = found orelse return CkptError.LayoutChanged;
+        // Likainen → kopioi live uudelleen kehykseen + suojaa + nollaa lippu.
+        if (ckpt.isDirty(cpid, i) orelse false) {
+            // Kehysosoite tallessa.
+            const f = ckpt.pageFrame(cpid, i) orelse return CkptError.LayoutChanged;
+            // Kopioi live → kehys.
+            const src: [*]const u8 = @ptrFromInt(vmm.physToVirt(snap.pages[ji].phys));
+            const dst: [*]u8 = @ptrFromInt(vmm.physToVirt(f));
+            // SMAP: salli tilapäisesti.
+            user_access.stac();
+            // Kopioi koko sivu uudelleen.
+            @memcpy(dst[0..4096], src[0..4096]);
+            // Palauta SMAP-suojaus.
+            user_access.clac();
+            // Nollaa dirty-lippu (puhdas + kopioitu).
+            _ = ckpt.setDirty(cpid, i, false);
+            // Suojaa uudelleen (fault oli avannut W:n).
+            if (!paging.setPteWritable(live_pml4, hhdm, sv, false)) return CkptError.NoGuard;
+        } else {
+            // Puhdas: W:n pitää yhä olla 0 (invariantti puhdas ⟺ suojattu).
+            // Puolustava uudelleensuojaus jos jokin avasi sen ohi handlerin.
+            const raw = paging.getPteRaw(live_pml4, hhdm, sv) orelse return CkptError.LayoutChanged;
+            // W-bitti päällä puhtaalla → sulje.
+            if ((raw & core.FLAG_WRITABLE) != 0) {
+                // Palauta suojaus.
+                if (!paging.setPteWritable(live_pml4, hhdm, sv, false)) return CkptError.NoGuard;
+            }
+        }
+    }
+    // Päivitä TLB (uudelleensuojaukset).
+    paging.setCr3(paging.getCr3());
+    // Sama cpid — inkrementti, ei uusi checkpoint.
+    return cpid;
+}
+
+// Käsittele kirjoitussuojaus-fault (31.5.4, #PF-käsittelijä kutsuu):
+// merkitse sivu likaiseksi + myönnä kirjoitus (fault-and-continue) jotta
+// kirjoittaja etenee. Palauttaa true jos fault kuului checkpointille
+// (ei lokitusta — K2 laskee vain todelliset viat), false jos vieras
+// (käsittelijä jatkaa vanhalla log+halt-polulla).
+pub fn handleWriteFault(fault_cr3: u64, fault_virt: u64) bool {
+    // Sivun perusosoite (offset pois).
+    const base = fault_virt & ~@as(u64, 0xFFF);
+    // Etsi checkpoint jonka avaruus faultasi (CR3-täsmäys — tarkka vaikka
+    // currentPid olisi vanhentunut keskeytyskonttekstissa).
+    var cpid: ?u32 = null;
+    var c: u32 = 1;
+    while (c <= ckpt.MAX_CHECKPOINTS) : (c += 1) {
+        // Paikka + PML4-täsmäys.
+        if (ckpt.slotByCpid(c)) |slot| {
+            // Käytössä oleva slotti (slotByCpid palauttaa vain käytössä olevat).
+            if (slot.pml4_phys == fault_cr3) {
+                // Löytyi.
+                cpid = c;
+                break;
+            }
+        }
+    }
+    // Ei checkpointia tälle avaruudelle → vieras fault.
+    const id = cpid orelse return false;
+    // Etsi sivu virt-osoitteella.
+    const n = ckpt.pageCount(id) orelse return false;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        // Täsmäävä sivu.
+        if ((ckpt.pageVirt(id, i) orelse 0) == base) {
+            // Merkitse likaiseksi (inkrementaali kopioi tämän).
+            _ = ckpt.setDirty(id, i, true);
+            // Myönnä kirjoitus: W=1 + flush, CPU yrittää uudelleen.
+            if (!paging.setPteWritable(fault_cr3, vmm.hhdm(), base, true)) {
+                // PTE-operaatio petti — peru lippu (johdonmukainen tila:
+                // suojattu+puhdas), anna vanhan polun hoitaa.
+                _ = ckpt.setDirty(id, i, false);
+                return false;
+            }
+            // Laskuri observabilityyn (boot-testi todistaa #PF-polun).
+            dirty_faults +|= 1;
+            // Käsitelty — palaa iretillä (ei lokia).
+            return true;
+        }
+    }
+    // Checkpointin avaruus mutta tuntematon sivu (ei inventoitu) → vieras.
+    return false;
+}
+
+// Montako likasta sivua checkpointissa — null jos tuntematon cpid (31.5.4).
+pub fn checkpointDirtyCount(cpid: u32) ?usize {
+    // Delegoi ytimeen.
+    return ckpt.dirtyCount(cpid);
 }
 
 // Poista yksi checkpoint: palauta W-bitit + vapauta kehykset.

@@ -19,8 +19,11 @@ pub const CkptPage = struct {
     virt: u64,
     // Kopion kehys (fyysinen osoite — PMM omistaa kunnes delete).
     frame_phys: u64,
-    // Oli kirjoitettava ennen suojausta (palautetaan deletessä).
+    // Oli kirjoitettava ennen suojausta (palautetaan deletessä/restoressa).
     was_writable: bool,
+    // Likainen: suojattuun sivuun kirjoitettu checkpointin jälkeen (31.5.4).
+    // Vain inkrementaalinen checkpoint lukee tämän (kopioi vain likaiset).
+    dirty: bool,
 };
 
 // Yksi plugin-checkpoint kiinteässä taulukossa.
@@ -189,4 +192,42 @@ pub fn pageCount(cpid: u32) ?usize {
     const slot = slotByCpid(cpid) orelse return null;
     // Palauta määrä.
     return slot.page_count;
+}
+
+// Merkitse sivu likaiseksi/puhtaaksi — false jos rajat ulkona (31.5.4).
+pub fn setDirty(cpid: u32, idx: usize, dirty: bool) bool {
+    // Hae paikka.
+    const slot = slotByCpid(cpid) orelse return false;
+    // Indeksi sivujen ulkopuolella.
+    if (idx >= slot.page_count) return false;
+    // Aseta lippu.
+    slot.pages[idx].dirty = dirty;
+    // Onnistui.
+    return true;
+}
+
+// Onko sivu likainen — null jos rajat ulkona (31.5.4).
+pub fn isDirty(cpid: u32, idx: usize) ?bool {
+    // Hae paikka.
+    const slot = slotByCpid(cpid) orelse return null;
+    // Indeksi sivujen ulkopuolella.
+    if (idx >= slot.page_count) return null;
+    // Palauta lippu.
+    return slot.pages[idx].dirty;
+}
+
+// Montako likasta sivua (inkrementaali-työmäärä) — null jos tuntematon cpid.
+pub fn dirtyCount(cpid: u32) ?usize {
+    // Hae paikka.
+    const slot = slotByCpid(cpid) orelse return null;
+    // Laskuri.
+    var n: usize = 0;
+    // Käy kopioidut sivut.
+    var i: usize = 0;
+    while (i < slot.page_count) : (i += 1) {
+        // Likainen → laske.
+        if (slot.pages[i].dirty) n += 1;
+    }
+    // Palauta määrä.
+    return n;
 }
