@@ -132,6 +132,14 @@ fn kmain() noreturn {
     }
     // Full + dev: aja kaikki integraatiotestit (vaihe 4–18).
     boot_tests.runAll();
+    // K2-portti: keskeytynyt testiajo ei saa jatkaa demoihin vihreänä.
+    // Hylkää bootti heti nollasta poikkeavalla err-laskurilla (non-zero exit).
+    if (log.errCount() > 0) {
+        // Epäonnistuminen serialiin CI-greppiä varten.
+        log.info("Full boot FAILED");
+        // Pysäytä QEMU exit 3:lla — build-step kaatuu punaiseksi.
+        qemu_exit.exitFailure();
+    }
     // Logita SMP CPU-määrä Limine-vastauksesta (stub).
     smp.initAndLog();
     // Pakota pit_ticks linkitys (timerOnIrqC).

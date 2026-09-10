@@ -741,6 +741,42 @@ pub fn build(b: *std.Build) void {
     copy_plugin_xfer_test_elf.addFileArg(embedded_plugin_xfer_test_path);
     copy_plugin_xfer_test_elf.step.dependOn(&plugin_xfer_test_exe.step);
 
+    // --- VSL-plugin ELF (VSL-0) — upotetaan kerneliin embedded_id=1 ---
+    const vsl_abi_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/linux_abi.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    vsl_abi_mod.single_threaded = true;
+    const vsl_libc_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/vsl_libc.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    vsl_libc_mod.single_threaded = true;
+    vsl_libc_mod.addImport("linux_abi", vsl_abi_mod);
+    const vsl_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/main.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    vsl_mod.red_zone = false;
+    vsl_mod.stack_protector = false;
+    vsl_mod.single_threaded = true;
+    const vsl_exe = b.addExecutable(.{
+        .name = "zinux-vsl",
+        .root_module = vsl_mod,
+    });
+    vsl_exe.setLinkerScript(b.path("userland/vsl/user.ld"));
+    vsl_exe.root_module.addAssemblyFile(b.path("userland/vsl/start.S"));
+    b.installArtifact(vsl_exe);
+
+    const embedded_vsl_path = b.path("kernel/loader/vsl_prog.bin");
+    const copy_vsl_elf = b.addSystemCommand(&.{ "cp", "-f" });
+    copy_vsl_elf.addFileArg(vsl_exe.getEmittedBin());
+    copy_vsl_elf.addFileArg(embedded_vsl_path);
+    copy_vsl_elf.step.dependOn(&vsl_exe.step);
+
     const kernel = b.addExecutable(.{
         .name = "zinux-kernel",
         .root_module = kernel_mod,
@@ -776,6 +812,7 @@ pub fn build(b: *std.Build) void {
     kernel.step.dependOn(&copy_mem_map_test_elf.step);
     kernel.step.dependOn(&copy_plugin_test_elf.step);
     kernel.step.dependOn(&copy_plugin_xfer_test_elf.step);
+    kernel.step.dependOn(&copy_vsl_elf.step);
     b.installArtifact(kernel);
 
     // --- Host-testit ---
@@ -1044,6 +1081,40 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("eeden_metrics", eeden_metrics_mod);
+    // VSL-1 — mini-Linux-ABI + libc-shim host-testeihin (riippuvuudeton ydin).
+    const vsl_abi_host_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/linux_abi.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("vsl_abi", vsl_abi_host_mod);
+    const vsl_libc_host_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/vsl_libc.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    vsl_libc_host_mod.addImport("linux_abi", vsl_abi_host_mod);
+    host_test_mod.addImport("vsl_libc", vsl_libc_host_mod);
+    // VSL-2 — fd-taulu + mini-shell host-testeihin (riippuvuudettomat).
+    const vsl_fd_host_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/fd.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("vsl_fd", vsl_fd_host_mod);
+    const vsl_shell_host_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/shell.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("vsl_shell", vsl_shell_host_mod);
+    // 31.5.1 — snapshot-kävelymatematiikka host-testeihin (riippuvuudeton).
+    const snapshot_core_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/snapshot_core.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("snapshot_core", snapshot_core_host_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });

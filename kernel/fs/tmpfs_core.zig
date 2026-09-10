@@ -170,6 +170,57 @@ pub fn close(file: *TmpfsFile) void {
     _ = file;
 }
 
+// Kirjoita tiedostoon offsetista — luo aukkoja nollilla, rajaa MAX_FILE_DATA:aan.
+// Ylikirjoittaa olemassaolevaa tai jatkaa loppua; liian suuri → NotSupported
+// (ei hiljaista katkaisua — kutsuja saa vastalauseen).
+pub fn writeFile(path: []const u8, buf: []const u8, offset: u64) TmpfsError!usize {
+    // tmpfs pitää olla alustettu.
+    if (!initialized) return TmpfsError.NotInitialized;
+    // Tarkista polun muoto.
+    try validateInnerPath(path);
+    // Etsi olemassaoleva tiedosto.
+    const file = findFile(path) orelse return TmpfsError.NotFound;
+    // Offset yli sisällön → aukko nollataan (harva kirjoitus, rajattu).
+    const off: usize = @intCast(offset);
+    // Aukko + data ei mahdu puskuriin → NotSupported.
+    if (off > MAX_FILE_DATA) return TmpfsError.NotSupported;
+    if (off + buf.len > MAX_FILE_DATA) return TmpfsError.NotSupported;
+    // Nollaa aukko vanhan lopun ja offsetin väliltä.
+    while (file.data_len < off) : (file.data_len += 1) {
+        // Täytä nollalla.
+        file.data[file.data_len] = 0;
+    }
+    // Kopioi data offsetista.
+    if (buf.len > 0) {
+        // Vähintään yksi tavu kopioitavana.
+        @memcpy(file.data[off..][0..buf.len], buf);
+    }
+    // Päivitä pituus jos kirjoitus jatkoi loppua.
+    const end = off + buf.len;
+    if (end > file.data_len) file.data_len = end;
+    // Palauta kirjoitettujen tavujen määrä.
+    return buf.len;
+}
+
+// Montako tiedostoa taulukossa (ls-laskuri VSL-shellille).
+pub fn fileCount() usize {
+    // Alustamaton → nolla.
+    if (!initialized) return 0;
+    // Palauta laskuri.
+    return file_count;
+}
+
+// Tiedoston polku indeksillä — null jos vapaa/rajat ulkona (ls-rivit).
+// Indeksi on taulukkoindeksi 0..MAX_FILES, ei aukiololaskuri.
+pub fn fileNameAt(idx: usize) ?[]const u8 {
+    // Rajojen ulkopuolella.
+    if (idx >= MAX_FILES) return null;
+    // Vapaa slotti.
+    if (!files[idx].used) return null;
+    // Palauta polkuviipale.
+    return files[idx].name[0..files[idx].name_len];
+}
+
 // Boot/host self-test — addFile + open/read/close.
 pub fn runSelfTest() TmpfsError!void {
     // Puhdas tila.

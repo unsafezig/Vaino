@@ -11,9 +11,10 @@
 //! ## Arkkitehtuurihuomiot (AGENTS.md)
 //! - Politiikka vs. mekanismi: tämä tiedosto on politiikka (järjestys +
 //!   erääntyminen); mekanismi (revoke/slot/PML4/pid) on loaderissa.
-//! - LIFO-pakko: prosessitaulukko on append-only ilman tiivistystä
-//!   (Vaihe 20/24) — häntä ensin ei tee aukkoja (sama kuri kuin
-//!   Vaihe 30/33 unload-järjestyksessä).
+//! - LIFO on purkujärjestyksen kuri (uusin ensin), ei allokaattorin pakko:
+//!   taulukko sietää reikiä (first-free-uudelleenkäyttö + täysskannaus,
+//!   K1-korjaus) eikä indeksi koskaan liiku — LIFO vain minimoi
+//!   väliaikaiset aukot (sama kuri kuin Vaihe 30/33 unload-järjestyksessä).
 //! - Timeout on kernelin raja, ei vihje: `now >= deadline` purkaa vaikka
 //!   tehtävä väittäisi olevansa kesken (ei ikuisia tehtäviä).
 //! - Tyhjä koostumus on triviaalisti purettu (0 pluginia → ei työtä).

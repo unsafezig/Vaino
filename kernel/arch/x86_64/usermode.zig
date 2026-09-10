@@ -45,6 +45,13 @@ extern fn userEntryEnd() void;
 
 // Kernel pinon osoite ennen iretq:ä — export assemblylle.
 pub export var usermode_saved_kernel_rsp: u64 = 0;
+// Callee-saved rekisterit ennen iretq:ä (rbx, rbp, r12-r15) — export assemblylle.
+// SYY (K4): sys_test_return ohittaa syscall_entry.S:n popit (paluu suoraan
+// ret:llä), joten ilman tätä paluuta jatkava kernel-koodi näkisi pluginin
+// sotkemat rbp/rbx/r12-r15:t — rbp-osoitettu kirjoitus osui .bss:ään ja nollasi
+// syscall-pinon canaryn. Tallenna mennessä, palauta tullessa (ei sisäkkäisyyttä:
+// ring 3 ei kutsu enterUserAs:ia, yksi globaali riittää kuten rsp:lle).
+pub export var usermode_saved_callee: [6]u64 = [_]u64{0} ** 6;
 // Palautettava pid ennen ring 3 -hyppyä (sys_test_return / sys_exit palauttaa).
 var usermode_saved_pid: u64 = process.BOOT_PID;
 // Ring 3:ssa suoritettava prosessi — varmuus currentPid:lle syscallien aikana (Vaihe 24).

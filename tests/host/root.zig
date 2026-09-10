@@ -165,3 +165,18 @@ test {
 test {
     _ = @import("eeden_gate_test.zig");
 }
+
+// Tuo VSL mini-ABI -yksikkötestit (VSL-1).
+test {
+    _ = @import("vsl_abi_test.zig");
+}
+
+// Tuo VSL fd-taulu + mini-shell -yksikkötestit (VSL-2).
+test {
+    _ = @import("vsl_fd_test.zig");
+}
+
+// Tuo snapshot-ydin-yksikkötestit (31.5.1).
+test {
+    _ = @import("snapshot_test.zig");
+}

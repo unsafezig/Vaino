@@ -709,8 +709,8 @@ zig build boot-test
 
 | # | Task | File | Status |
 |---|------|------|--------|
-| 31.5.1 | Snapshot struct (`base_addr`, `size`) + page-table walk | `kernel/snapshot.zig` | ⬜ |
-| 31.5.2 | `sys_plugin_checkpoint(slot)` → dump+W=0 guard | `kernel/syscall/snapshot_syscall.zig` | ⬜ |
+| 31.5.1 | Snapshot struct + page-table walk (U/S-bit boundary, not half) | `kernel/snapshot_core.zig`, `kernel/snapshot.zig` | ✅ pure index/leaf math + freestanding 4-level walk + `Snapshot walk OK` boot test (VSL PML4 anchor, supervisor-skip proof) |
+| 31.5.2 | `sys_plugin_checkpoint(slot)` → dump+W=0 guard | `kernel/syscall/snapshot_syscall.zig` | ⬜ next (needs 31.5.1 inventory — done) |
 | 31.5.3 | `sys_plugin_restore(slot, id)` → remap + restore slots/regs | `kernel/syscall/restore_syscall.zig` | ⬜ |
 | 31.5.4 | Incremental snapshot (dirty-page tracking via #PF) | `kernel/snapshot_delta.zig` | ⬜ |
 | 31.5.5 | Watchdog: auto-restore on crash | `kernel/plugin_watchdog.zig` | ⬜ |
@@ -781,6 +781,8 @@ zig build boot-test
 - `zig build test --summary all` → 114/114 host tests passed (incl. 3 new heal tests).
 - `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
 - QEMU `boot-test` serial (`Plugin heal validation OK`, `Plugin diagnostics OK`, `Self-heal OK`) → pending CI (no QEMU/xorriso on dev machine, same as phases 29–31).
+- **Amendment 2026-09-10 (first local QEMU run): serials NOT observed — heal test aborts at `Heal boot slot failed`. See K1/K2.**
+- **Amendment 2026-09-10 (K1+K4 fixes, 3× green runs, 0 `[ERR]`): all serials observed — `Plugin heal validation OK`, `Plugin diagnostics OK`, `Hot-swap replaced plugin`, `Self-heal OK`.**
 
 #### Phase 34 — Task-Driven Composition (The Eeden Phase) ✅
 
@@ -858,6 +860,8 @@ zig build boot-test
 - `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
 - Ground-truth cross-check: all 4 crypto vectors verified byte-for-byte against Python `hashlib`/`hmac` before acceptance (caught 3 transcription typos — evidence for never trusting hand-copied constants).
 - QEMU `boot-test` serial (`Node A joined`, `Uptime plugin migrated A->B`, `Failover: uptime plugin replicated on B`, `Federated cluster OK`) → pending CI (no QEMU/xorriso on dev machine, same as phases 29–34).
+- **Amendment 2026-09-10 (first local QEMU run): only `Node A/B joined` observed — federate test aborts at `Federate boot slot failed`. See K1/K2.**
+- **Amendment 2026-09-10 (K1+allocator+tamper+K4 fixes, 3× green runs, 0 `[ERR]`): all serials observed — `Uptime plugin migrated A->B`, `Node A left`, `Failover: uptime plugin replicated on B`, `Federated cluster OK`.**
 
 #### Phase 36 — Hardware-as-a-Service (Design / Research) ✅
 
@@ -938,27 +942,246 @@ zig build boot-test
 
 ---
 
+#### Phase 38 — VSL-0: Spec + Stub Plugin ✅
+
+> **Goal**: Linux enters Zinux as one plugin among many — core stays clean.
+> Stub proves the lifecycle → manifest → scope → gateway chain without
+> Linux complexity (VSL-spec options A+C; VM-host B rejected as negative result).
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| 38.1 | VSL canonical spec (choice A+C, mini-ABI table, scope, addresses, non-goals) | `docs/VSL_SPEC.md` | ✅ |
+| 38.2 | VSL stub ELF (`vsl\n` + `SYS_test_return`) | `userland/vsl/main.zig`, `start.S`, `user.ld` (@ `0xFFFFFFFF90094000`) | ✅ |
+| 38.3 | Second embedded image in loader (`embedded_id=1`, stack slot 118) | `kernel/plugin/loader.zig` | ✅ `VSL_EMBEDDED_ID`, `vslElf()`, image+slot branch |
+| 38.4 | Boot test: negatives → load → run → LIFO-unload | `kernel/syscall/vsl_syscall.zig` | ✅ `VSL stub OK` |
+
+**Dependency**: Phases 29–31 (scope/manifest/gateway + loader pattern).
+
+**Test**:
+```bash
+zig build test
+# vsl stub vectors incl. (139 passed)
+zig build boot-test
+# Expected serial: vsl / VSL stub OK / All boot tests OK
+```
+
+**Implementation summary:**
+- **Stub ELF** (`userland/vsl/`, freestanding, same shape as `plugin_test`): `_start` writes `vsl\n` via `sys_write(1)` then `SYS_test_return(10)`. Own load address `0xFFFFFFFF90094000` (free gap after xfer `.capboot` `...93000`) and heap stack slot 118 (116=plugin, 117=xfer).
+- **Loader branch** (`kernel/plugin/loader.zig`): `isValidEmbeddedId` accepts `0|1`; `loadPlugin` selects `plugin_elf/PLUGIN_STACK_SLOT` vs `vsl_elf/VSL_STACK_SLOT`; new `vslElf()` accessor mirrors `pluginElf()` (Phase 33 precedent).
+- **Boot test** (`kernel/syscall/vsl_syscall.zig`, registered after `plugin_transfer` on a clean table): `bad id → EINVAL`, grant-escalation → EPERM, valid load with VSL scope (`port SEND|RECV + memory MAP|READ`, no GRANT — I4), `runPlugin` (`vsl\n`), `sys_plugin_unload` (zero survivors for heal/composer).
+- **Wiring**: `build.zig` VSL embed block → `kernel/loader/vsl_prog.bin` + kernel dep; `boot_tests.zig` registration.
+
+**Verification evidence (2026-09-10):**
+- `zig build test --summary all` → 139 host tests passed.
+- `zig build` + `zig build -Dboot=full` (freestanding kernel incl. VSL ELF + boot test) → passed.
+- QEMU `boot-test` serial (`vsl`, `VSL stub OK`) → **observed 2026-09-10, first local QEMU run (WSL2).**
+
+#### Phase 39 — VSL-1: Mini-Linux-ABI Translator ✅
+
+> **Goal**: User-space Linux→Zinux syscall translation. The kernel never
+> learns Linux — VSL learns Zinux (core stays clean).
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| 39.1 | Pure translation table (7 Linux nrs, internal-uname, memory-cap flags) | `userland/vsl/linux_abi.zig` | ✅ no imports, host-testable |
+| 39.2 | Ring-3 shim (`vslWrite/Exit/Getpid`, local `unameCopy`, `isSupported`) | `userland/vsl/vsl_libc.zig` | ✅ Zig 0.16 asm-clobber style |
+| 39.3 | Host vectors (translations + rejections + uname copy/truncation) | `tests/host/vsl_abi_test.zig` | ✅ 3 tests |
+
+**Test**:
+```bash
+zig build test
+# vsl translate + reject/uname + shim matrix OK (139 passed)
+zig build boot-test
+# Expected serial: VSL ABI OK, All boot tests OK
+```
+
+**Implementation summary:**
+- **Table** (`linux_abi.zig`): `read(0)→11`, `write(1)→1`, `mmap(9)/brk(12)→mem_map(23)`, `getpid(39)→3`, `exit(60)→2`; `uname(63)` internal (`isHandledInternally`), `openat(257)` + unknown → null (ENOSYS port for VSL-2). `needsMemoryCap(brk/mmap)` pins the scope requirement.
+- **Shim** (`vsl_libc.zig`): thin `syscall` wrappers (numbers pass through as Zinux only — Linux numbers never reach the kernel); `unameCopy` answers `"VSL 0.1"` locally with truncation instead of overflow; `classifyReturn`/`isSupported` pure for host tests.
+- **Honest limit** (VSL_SPEC.md §3): only shim-linked test binaries work; trap-and-emulate of unmodified Linux ELFs is VSL-4 future, not claimed now.
+- **Wiring**: `build.zig` host modules `vsl_abi` + `vsl_libc` (shared instance, `composer_task` pattern); `tests/host/root.zig` registration; kernel boot test asserts the VSL scope covers both ABI type bits (port+memory).
+
+**Verification evidence (2026-09-10):**
+- `zig build test --summary all` → 139 host tests passed (incl. 3 new VSL vectors).
+- `zig build` + `zig build -Dboot=full` → passed.
+- QEMU `boot-test` serial (`VSL ABI OK`) → **observed 2026-09-10, first local QEMU run (WSL2).**
+
+#### Phase 40 — VSL-2: fd-table + Block-Backed Mini-Shell ✅
+
+> **Goal**: VSL answers `ls /tmp` / `cat` from real storage — still fully
+> in user space, still no kernel extensions for Linux.
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| 40.1 | fd-table in VSL (console/file/pipe kinds, 0/1/2 reserved, honest `isIoReady`) | `userland/vsl/fd.zig` | ✅ pure + 2 host tests |
+| 40.2 | virtio-blk multi-sector read (`readSector0` → `readSector(n)` + sector-1 proof) | `kernel/drivers/block/virtio_blk.zig` | ✅ `VirtIO block multi OK` |
+| 40.3 | VFS `write` op (optional, read-only FS → NotSupported) + tmpfs write/list | `kernel/fs/vfs_core.zig`, `vfs.zig`, `tmpfs_core.zig`, `tmpfs.zig` | ✅ `VSL fs OK` |
+| 40.4 | Mini-shell parser (`help/ls/cat`, stable errors) + kernel-side `ls/cat/write` demo | `userland/vsl/shell.zig`, `kernel/syscall/vsl_fs_syscall.zig` | ✅ `vsl-ls` / `vsl-cat: TMPFS` + 2 host tests |
+
+**Dependency**: Phase 6 (drivers/VFS reference) + Phase 39 (ABI table).
+
+**Test**:
+```bash
+zig build test
+# vsl fd + shell + tmpfs write/list + vfs write-reject OK (148 passed)
+zig build boot-test
+# Expected serial: VirtIO block multi OK, vsl-ls: welcome, vsl-cat: TMPFS,
+# VSL fs OK, All boot tests OK
+```
+
+**Implementation summary:**
+- **fd-table** (`userland/vsl/fd.zig`, dependency-free): `MAX_FDS=16` (VFS parity), fds 0/1/2 pinned console, `openFile/closeFd/kindOf/openCount`; `isIoReady` returns true only for console — file/pipe honestly false until fd-syscalls exist (VSL-4). Console close is a Linux-parity no-op.
+- **Shell parser** (`userland/vsl/shell.zig`, pure): `parseLine` → `help/ls/cat/noop/unknown` with stable `MissingPath → PathTooLong` errors; execution lives in the kernel boot path (request vs. permission split).
+- **virtio multi-read**: `readSector0` generalized to `readSector(n)`; boot test reads sector 1 after the sector-0 magic check (test disk is 2048 sectors, only magic written) and asserts status-OK + all-zero → `VirtIO block multi OK`. Existing serials untouched.
+- **VFS write**: optional `write` field on `FileSystemOps` (default null → `NotSupported`, so testfs needs no change); `tmpfs_core.writeFile` with gap-zeroing bounded by `MAX_FILE_DATA` (overflow → `NotSupported`, never truncated); `fileCount/fileNameAt` re-exported through `tmpfs.zig` for `ls`.
+- **Boot test** (`kernel/syscall/vsl_fs_syscall.zig`, self-contained VFS+tmpfs init, registered after the VSL stub test): missing-path negative → `vsl-ls: welcome` → `vsl-cat: TMPFS` → write `"hello-vsl"` readback → `VSL fs OK`.
+
+**Verification evidence (2026-09-10):**
+- `zig build test --summary all` → 148 host tests passed (incl. 4 vsl fd/shell + 3 tmpfs + 1 vfs tests).
+- `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
+- QEMU `boot-test` serial (`VirtIO block multi OK`, `vsl-ls`, `vsl-cat: TMPFS`, `VSL fs OK`) → **observed 2026-09-10, first local QEMU run (WSL2).**
+
+#### Phase 41 — VSL-3: Snapshot-Ready State Descriptor ⬜ Blocked on 31.5
+
+> **Goal**: VSL carries a `VslState{regs, caps, pages}` descriptor so the
+> Phase 31.5 snapshot mechanism has a concrete target. No restore claimed
+> until `snapshot.zig/restore` exist.
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| 41.1 | State descriptor format + dirty-page refs | `userland/vsl/state.zig` | ⬜ |
+| 41.2 | Shared-port continuity via `plugin_swap` (BOOT-owned port survives) | `kernel/plugin_swap.zig` reuse | ⬜ |
+| 41.3 | TDL `needs: [vsl-shell]` compose/decompose demo | `kernel/composer.zig` reuse | ⬜ |
+
+**Dependency**: Phase 31.5 (snapshots) for owned-cap migration; stateless +
+shared-port healing works today (Phase 33 pattern).
+
+---
+
+### Known Issues (found by first local QEMU run, 2026-09-10)
+
+> Until 2026-09-10 no full `boot-test` had ever run locally (no QEMU/xorriso
+> on the dev machine — every phase's QEMU evidence was "pending CI"). The
+> first local run (WSL2 Ubuntu 24.04, `qemu-system-x86_64` + `xorriso`,
+> disposable `~/zinux` copy) boots to `Full boot OK` but exposes two
+> pre-existing issues below. Neither is caused by VSL (reproduced on a
+> pristine Phase-37 tree via `git stash -u`).
+
+| ID | Severity | Location | Problem | Status |
+|----|----------|----------|---------|--------|
+| **K1** | High | `plugin_heal_syscall.zig:90`, `federate.zig:126` | BOOT_PID slot exhaustion aborts the heal + federate boot tests mid-run | ✅ fixed 2026-09-10 (suite-boundary wipe + hole-safe allocator, see below) |
+| **K2** | High | `kernel/boot_tests.zig:209` | `All boot tests OK` prints unconditionally — no failure propagation, CI green on partial runs | ✅ fixed 2026-09-10 (err-count verdict + non-zero QEMU exit + CI markers) |
+| **K4** | Critical | `arch/x86_64/usermode_jump.S`, `arch/x86_64/usermode.zig` | ring-3 round trip clobbers callee-saved regs (rbp) → wild writes into .bss (syscall-stack canary) | ✅ fixed 2026-09-10 (save/restore rbx/rbp/r12-r15, see below) |
+
+**K1 attack path (no attacker needed — the test chain does it to itself):**
+each boot test installs BOOT-owned capability slots (`installSlotForPid(BOOT_PID, …)`)
+and most never release them. By the time the heal test runs (~40 tests in),
+all `MAX_SLOTS = 32` BOOT slots (`capability_core.zig:69`) are occupied, so
+`installSlotForPid(BOOT_PID, shared_obj, …)` returns null and the test logs
+`[ERR] Heal boot slot failed` and returns early. Same for federate
+(`[ERR] Federate boot slot failed`). Observed serials around the failures:
+
+```text
+VSL fs OK
+[ERR] Heal boot slot failed          ← Phase 33 aborts here
+Task received: http+uptime           ← Phase 34 continues as if nothing happened
+...
+Node A joined
+Node B joined
+[ERR] Federate boot slot failed      ← Phase 35 aborts here
+Unknown device detected              ← Phase 36 continues
+...
+All boot tests OK                    ← prints regardless (K2)
+Full boot OK
+```
+
+**Serials documented as expected but never observed** (so their ✅ rests on
+host tests + code review, not on QEMU): `Plugin heal validation OK`,
+`Plugin diagnostics OK`, `Hot-swap replaced plugin`, `Self-heal OK`
+(Phase 33); `Uptime plugin migrated A->B`, `Node A left`,
+`Failover: uptime plugin replicated on B`, `Federated cluster OK` (Phase 35).
+
+**K2 mechanism:** every `runBootTest()` returns `void`; failures only `log.err`
+and `return`. `runAll()` ends with unconditional `log.info("All boot tests OK")`,
+and the QEMU step exits 0. A boot that aborts two test suites is
+indistinguishable from a green boot in CI.
+
+**Suggested fixes (not implemented):**
+- K1-short-term: audit BOOT-slot consumers across `boot_tests.zig`, release
+  (or reuse) BOOT slots per test — e.g. a `releaseBootSlots()` epilogue or
+  per-test countable budget.
+- K1-structural: track slot pressure as a boot metric (free BOOT slots after
+  each suite) so exhaustion becomes visible before it aborts a suite.
+- K2: propagate failures — `runAll() → !void` or a failed-suite counter ending
+  in `Boot tests FAILED` + non-zero QEMU exit; CI must grep per-suite markers,
+  not just the final line (the `eeden_gate.yml` marker-grep pattern already
+  points this way — extend it to heal/federate/VSL markers).
+
+**Fixes landed 2026-09-10 (all verified with 3× green QEMU runs, 0 `[ERR]`):**
+- **K1-fix (two layers):**
+  1. `betweenSuites()` in `kernel/boot_tests.zig` (after all 59 suites):
+     `revokeAllOwnedBy(BOOT_PID)` (frees BOOT-owned objects + ports globally
+     via I6) + `clearSlotsForPid(BOOT_PID)` (resets the append-only counter).
+     Safe: cross-suite state is pid/registry/VFS-based, never BOOT slots
+     (load→unload chain verified pid-based).
+  2. Hole-safe allocator in `kernel/sched/process_core.zig`: `findIndex`
+     scans the full table (was: `used_count` bound — non-LIFO free orphaned
+     the tail, which is exactly how federate lost pid_b's slots after
+     draining pid_a), `allocProcess` reuses first-free index (was: blind
+     append that overwrote the orphaned tail), `pidAt` enumerates live
+     ordinals (keeps `sys_ps` dense). Index never moves (slot-group
+     invariant kept); `freePid` documents the clear-slots-first precondition.
+     Pinned by 2 new host tests (`non-LIFO free keeps tail reachable`,
+     `pidAt enumerates live ordinals`).
+- **K2-fix:** `log.err` counts (`errCount()`, saturating); `runAll` ends with
+  `Boot tests FAILED` vs `All boot tests OK`; `main.zig` gates full/dev boot
+  on the counter (`Full boot FAILED` + new `qemu_exit.exitFailure()`,
+  QEMU exit 3 → build step red); `ci.yml` now also fails on
+  `Boot tests FAILED` and requires the previously-silent markers
+  (`Self-heal OK`, `Federated cluster OK`, `VSL fs OK`). Convention
+  documented: `log.err` in boot context is always a failure signal.
+  (Proven during development: the federate-tamper bug below was caught by
+  this gate instead of printing false green.)
+- **K4-fix (root cause, found via QEMU+GDB hardware watchpoint):**
+  `usermodeEnterIret` saved only RSP; `sys_test_return` bypasses
+  `syscall_entry.S`'s register pops (direct `ret`), so every ring-3 plugin
+  run resumed kernel code with plugin-clobbered rbp/rbx/r12-r15. The resumed
+  `hw_lifecycle.runBootTest` then wrote a 200 B struct through a stale rbp
+  into `.bss`, zeroing the syscall-stack canary (`A[ERR] Stack canary
+  violation` at scheduler start). Caught with a GDB watchpoint on the canary
+  address: `memcpy(dest=bitmap_storage+32744, len=200)` from a `rbp-0xf78`
+  stack slot — disassembly proved the destination was stack-computed, i.e.
+  rbp itself was garbage. Fix: `usermode_saved_callee[6]` globals —
+  save rbx/rbp/r12-r15 on enter, restore on return (same single-global
+  discipline as the existing `usermode_saved_kernel_rsp`; no nesting exists).
+- **Bonus fix found by the now-working gate:** federate's tamper negative
+  expected `BadMac` for a tampered copy of an already-opened envelope, but
+  the tunnel correctly checks replay-window before MAC (`Replay` is the right
+  answer — the host test already encoded this). Test now seals fresh then
+  tampers, matching `federate_test.zig`.
+
 ### Recommended Execution Order
 
 ```
-🔴 BLOCKER → Phase 0: Fix sys_cap_create(type=5) bug ← blocks everything
+✅ DONE → Phases 0–37: Foundation … Eeden Gate (all green, QEMU serials pending CI)
+✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
+✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) — 3× green QEMU, 0 [ERR]
    ↓
-Phase 29 — Plugin sandbox model ✅ DONE (scope + manifest + PLUGIN_MODEL.md)
+⬜ NEXT → 31.5.2 `sys_plugin_checkpoint` (page-copy + W=0 guard on the 31.5.1 inventory)
    ↓
-Phase 30 — sys_plugin_load/unload ✅ DONE (lifecycle + enforcement + reclamation)
+⬜ THEN → Phase 41 — VSL-3 snapshot-ready state descriptor (needs 31.5.2+)
    ↓
-Phase 31 — Plugin IPC framework ← NEXT (cross-scope cap transfer)
-Phase 31.5 — Snapshots & restore ⬛ 4 sessions, hardest kernel change
-Phase 32 — Distribution infrastructure (docs + build.zig — parallelizable ✅)
-Phase 33 — Self-healing (depends on 31.5 for hot-swap bridge)
-Phase 34 — TDL + composer ("The Eeden Phase" milestone)
-Phase 35 — Federation (network stack — biggest new surface, defer if risk-averse)
-Phase 36 — HW-as-a-service (research stage — design doc only for now)
-Phase 37 — E Eden Gate integration demo
+⬛ HARD → 31.5.4/31.5.5 — dirty-tracking via #PF + watchdog (still the hardest kernel work)
+   ↓
+⬜ BLOCKED on 31.5 → Phase 41 — VSL-3 snapshot-ready state (owned caps need restore)
+   ↓
+⬛ HARD → Phase 31.5 — Snapshots & restore (hardest single kernel change, still open)
 ```
 
-**Parallelizable early**: Phase 32 (docs/registry) and Phase 34 TDL spec can be drafted alongside Phases 30–31.
-**Deferred to later**: Phase 36 is research; Phase 35 is high-risk networking — treat as stretch goals after the plugin core (30–33) is solid.
+**Parallelizable**: VSL-2 file work (fd-table, shell demo) can proceed alongside
+virtio-blk multi-sector read — neither touches the trusted core.
+**Deferred**: VM-host Linux (rejected option B) stays a VSL-4+ experiment;
+no VT-x/EPT work until VSL-2 proves the translation model.
 
 ---
 
@@ -994,6 +1217,10 @@ graph TD
     V25 --> V26[Phase 26: Preemptive scheduler]
     V22 --> V27[Phase 27: Userland cross IPC]
     V25 --> V28[Phase 28: sys_mem_map]
+    V28 --> V38[Phase 38: VSL-0 stub]
+    V38 --> V39[Phase 39: VSL-1 mini-ABI]
+    V39 --> V40[Phase 40: VSL-2 mini-shell]
+    V40 --> V41[Phase 41: VSL-3 snapshot-ready]
 ```
 
 ---

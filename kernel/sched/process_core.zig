@@ -100,12 +100,16 @@ pub fn initCore() void {
 }
 
 // Hae prosessin taulukkoindeksi pid:llä.
+// Skannaa KOKO taulukko (ei used_count:iin) — vapautus jättää reikiä
+// (non-LIFO free, esim. migraation lähde ennen varaajaa) eikä häntää saa
+// orpottaa (K1-seuraus: federate menetti pid_b:n slotit). Indeksi on
+// capability-slottien ryhmä eikä koskaan liiku elinaikana.
 pub fn findIndex(pid: u64) ?usize {
     // Vaadi alustus.
     if (!initialized) return null;
-    // Käy rekisteröidyt prosessit.
+    // Käy koko taulukko — reiät ohitetaan used-lipulla, häntä ei orpoudu.
     var i: usize = 0;
-    while (i < used_count) : (i += 1) {
+    while (i < processes.len) : (i += 1) {
         // Täsmäävä pid → indeksi.
         if (processes[i].used and processes[i].pid == pid) return i;
     }
@@ -141,10 +145,24 @@ pub fn allocProcess(pid: u64) bool {
     if (!initialized) return false;
     // Jo rekisteröity → OK.
     if (findIndex(pid) != null) return true;
-    // Taulukko täynnä.
+    // Etsi ensimmäinen vapaa paikka KOKO taulukosta (reikäuudelleenkäyttö —
+    // append-only häntään päällekkirjoittaisi orvotetun hännän, K1).
+    var slot: ?usize = null;
+    var i: usize = 0;
+    while (i < processes.len) : (i += 1) {
+        // Vapaa paikka löytyi.
+        if (!processes[i].used) {
+            // Tallenna ensimmäinen vapaa.
+            slot = i;
+            break;
+        }
+    }
+    // Ei vapaata paikkaa vaikka laskuri sallisi (ei pitäisi tapahtua).
+    const idx = slot orelse return false;
+    // Laskuri on elävien määrä — täysi kun vapaita ei ole.
     if (used_count >= MAX_PROCESSES) return false;
-    // Lisää uusi prosessi.
-    processes[used_count] = .{
+    // Lisää uusi prosessi vapaaseen paikkaan (indeksi säilyy eliniän).
+    processes[idx] = .{
         .used = true,
         .pid = pid,
         .loaded = false,
@@ -234,16 +252,26 @@ pub fn processCount() usize {
     return used_count;
 }
 
-// Palauta rekisteröidyn prosessin pid taulukko-indeksillä (0..processCount-1).
+// Palauta rekisteröidyn prosessin pid ordinaali-indeksillä (0..processCount-1).
+// Ordinaali = monesko ELÄVÄ paikka taulukossa (reiät ohitetaan) — ps-listat
+// iteroivat tiheästi vaikka vapautus jättäisi reikiä (non-LIFO free, K1).
 pub fn pidAt(index: usize) ?u64 {
     // Vaadi alustus.
     if (!initialized) return null;
-    // Indeksi taulukon ulkopuolella.
-    if (index >= used_count) return null;
-    // Paikka ei käytössä.
-    if (!processes[index].used) return null;
-    // Palauta prosessitunniste.
-    return processes[index].pid;
+    // Elävien laskuri ordinaalivertailuun.
+    var seen: usize = 0;
+    // Käy koko taulukko järjestyksessä.
+    var i: usize = 0;
+    while (i < processes.len) : (i += 1) {
+        // Ohita vapaa paikka (reikä).
+        if (!processes[i].used) continue;
+        // Ordinaali täsmää → palauta pid.
+        if (seen == index) return processes[i].pid;
+        // Seuraava elävä.
+        seen += 1;
+    }
+    // Ordinaali elävien ulkopuolella.
+    return null;
 }
 
 // Onko prosessilla ladattu ELF (spawnattu user-prosessi).
@@ -348,6 +376,10 @@ pub fn reapZombie(pid: u64) bool {
 }
 
 // Vapauta pid — merkitsee prosessipaikan vapaaksi (vaihe 25 virhekäsittely).
+// EI tiivistä taulukkoa: indeksi säilyy capability-slottien ryhmänä eikä
+// häntä orpoudu (K1). Ehto: kutsujan on kutsuttava capabilityn
+// clearSlotsForPid(pid) ENNEN freePid:tä jos pidiin on asennettu cappeja
+// (unload/swap tekevät; virhepolkujen tuoreet pidit eivät asenna).
 pub fn freePid(pid: u64) bool {
     // Etsi indeksi.
     const idx = findIndex(pid) orelse return false;

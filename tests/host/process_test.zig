@@ -47,8 +47,7 @@ test "setLoaded and getLoadedInfo" {
     try std.testing.expectEqual(@as(u64, 77), info.stack_slot);
 }
 
-test "capability slots isolated per process" {
-    // Puhdas tila — prosessi 1 + capability.
+test "capability slots isolated per process" {    // Puhdas tila — prosessi 1 + capability.
     cap.initCore();
     // Rekisteröi prosessi 2.
     try std.testing.expect(proc.allocProcess(2));
@@ -69,4 +68,40 @@ test "capability slots isolated per process" {
     try std.testing.expect(proc.setCurrentPid(2));
     const cur = cap.lookupSlot(slot2) orelse return error.TestFailed;
     try std.testing.expectEqual(ref2.object_id, cur.object_id);
+}
+
+test "non-LIFO free keeps tail reachable (K1)" {
+    // Puhdas tila (boot pid 1).
+    proc.initCore();
+    // Kaksi peräkkäistä: A=2 (vanhempi), B=3 (häntä).
+    try std.testing.expect(proc.allocProcess(2));
+    try std.testing.expect(proc.allocProcess(3));
+    // Vapauta VANHEMPI ensin (migraation lähde ennen varaajaa).
+    try std.testing.expect(proc.freePid(2));
+    // Häntä yhä löydettävissä (ei orpoudu used_count-rajalla).
+    try std.testing.expect(proc.exists(3));
+    try std.testing.expect(proc.setCurrentPid(3));
+    // Laskuri on elävien määrä (1 boot + B).
+    try std.testing.expectEqual(@as(usize, 2), proc.processCount());
+    // Uusi allokaatio EI kirjoita hännän päälle (reikäuudelleenkäyttö).
+    try std.testing.expect(proc.allocProcess(4));
+    try std.testing.expect(proc.exists(3));
+    try std.testing.expect(proc.exists(4));
+    try std.testing.expectEqual(@as(usize, 3), proc.processCount());
+}
+
+test "pidAt enumerates live ordinals across holes" {
+    // Puhdas tila + kolme prosessia.
+    proc.initCore();
+    try std.testing.expect(proc.allocProcess(2));
+    try std.testing.expect(proc.allocProcess(3));
+    try std.testing.expect(proc.allocProcess(4));
+    // Vapauta keskimmäinen (reikä).
+    try std.testing.expect(proc.freePid(3));
+    // Ordinaalit tiheinä: 0→boot, 1→2, 2→4 (ei reikää).
+    try std.testing.expectEqual(@as(u64, 1), (proc.pidAt(0) orelse return error.TestFailed));
+    try std.testing.expectEqual(@as(u64, 2), (proc.pidAt(1) orelse return error.TestFailed));
+    try std.testing.expectEqual(@as(u64, 4), (proc.pidAt(2) orelse return error.TestFailed));
+    // Alueen ulkopuolella → null.
+    try std.testing.expect(proc.pidAt(3) == null);
 }

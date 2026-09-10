@@ -243,8 +243,8 @@ fn setupQueue() bool {
     return true;
 }
 
-// Lue sektori 0 levylt — palauttaa true jos status OK.
-fn readSector0(data_out: *[SECTOR_SIZE]u8) bool {
+// Lue yksi sektori levyltä — palauttaa true jos status OK (VSL-2: parametrisoitu).
+fn readSector(sector_num: u64, data_out: *[SECTOR_SIZE]u8) bool {
     // Descriptor-taulukko CPU-puolella.
     const desc: [*]VirtqDesc = @ptrFromInt(vmm.physToVirt(desc_phys));
     // Avail ring CPU-puolella.
@@ -261,8 +261,8 @@ fn readSector0(data_out: *[SECTOR_SIZE]u8) bool {
     const data_ptr = req_base + @sizeOf(BlkReqHeader);
     // Status-tavu datan jälkeen (laite kirjoittaa).
     const status_ptr: *volatile u8 = @ptrFromInt(@intFromPtr(req_base + @sizeOf(BlkReqHeader) + SECTOR_SIZE));
-    // Valmistele read-pyyntö sektorille 0.
-    hdr.* = .{ .typ = BLK_T_IN, .reserved = 0, .sector = 0 };
+    // Valmistele read-pyyntö annetulle sektorille.
+    hdr.* = .{ .typ = BLK_T_IN, .reserved = 0, .sector = sector_num };
     // Nollaa status ennen pyyntöä.
     status_ptr.* = 0xFF;
     // Descriptor 0: header (device read-only).
@@ -413,7 +413,7 @@ pub fn runBootTest() void {
     // Puskuri sektorin 0 datalle.
     var sector: [SECTOR_SIZE]u8 = undefined;
     // Lue sektori 0.
-    if (!readSector0(&sector)) {
+    if (!readSector(0, &sector)) {
         // DMA read epäonnistui.
         log.err("VirtIO block read failed");
         return;
@@ -436,4 +436,28 @@ pub fn runBootTest() void {
     }
     // Kaikki OK.
     log.info("VirtIO block read OK");
+    // VSL-2: monisektoriluku — sektori 1 (testilevy: nollia, status OK).
+    var sector1: [SECTOR_SIZE]u8 = undefined;
+    // Lue sektori 1 samalla jonolla (peräkkäinen pyyntö).
+    if (!readSector(1, &sector1)) {
+        // Toinen peräkkäinen luku epäonnistui.
+        log.err("VirtIO block multi read failed");
+        return;
+    }
+    // Varmista sektori 1 on nollia (testilevy kirjoittaa vain magicin sektoriin 0).
+    var all_zero = true;
+    // Indeksi nollatarkistuksessa.
+    var zi: usize = 0;
+    // Käy koko sektori.
+    while (zi < SECTOR_SIZE) : (zi += 1) {
+        // Nollasta poikkeava tavu.
+        if (sector1[zi] != 0) all_zero = false;
+    }
+    if (!all_zero) {
+        // Odottamaton data sektorissa 1.
+        log.err("VirtIO block sector1 not zero");
+        return;
+    }
+    // Peräkkäinen monisektoriluku OK (VSL-levypolun perusta).
+    log.info("VirtIO block multi OK");
 }

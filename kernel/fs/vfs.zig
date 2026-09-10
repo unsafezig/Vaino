@@ -48,6 +48,12 @@ pub fn close(handle: FileHandle) void {
     core.close(handle);
 }
 
+// Kirjoita avoimeen tiedostoon (VSL-2 — tmpfs toteuttaa, read-only FS ei).
+pub fn write(handle: FileHandle, buf: []const u8, offset: u64) VfsError!usize {
+    // Delegoi ytimeen.
+    return core.write(handle, buf, offset);
+}
+
 // Boot-testi — mount testfs, open/read/close, vahvista "HELLO".
 pub fn runBootTest() void {
     // Varmista ydin on alustettu.

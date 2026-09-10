@@ -207,6 +207,29 @@ jobs:
             exit 1
           }
 
+          # K2-portti: aiemmin hiljaa keskeytyneet suitet (K1) jäivät
+          # huomaamatta koska vain loppurivi tarkistettiin. Vaadi nyt
+          # myöhäisten suitejen omat markerit + eksplisiittinen FAIL-ehto.
+          if grep -q "Boot tests FAILED" boot-full.log; then
+            echo "::error::Boot verdict FAILED (see [ERR] lines above)."
+            exit 1
+          fi
+
+          grep -q "Self-heal OK" boot-full.log || {
+            echo "::error::Missing 'Self-heal OK' marker (Phase 33 aborted?)."
+            exit 1
+          }
+
+          grep -q "Federated cluster OK" boot-full.log || {
+            echo "::error::Missing 'Federated cluster OK' marker (Phase 35 aborted?)."
+            exit 1
+          }
+
+          grep -q "VSL fs OK" boot-full.log || {
+            echo "::error::Missing 'VSL fs OK' marker (Phase 40 aborted?)."
+            exit 1
+          }
+
           echo "Full boot verification OK."
 
       # ------------------------------------------------------------

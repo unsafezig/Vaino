@@ -31,11 +31,17 @@ const cap = @import("../ipc/capability_core.zig");
 
 // Upotettu plugin-ELF — build.zig kopioi user-bin:n tähän ennen kernel-käännöstä.
 const plugin_elf = @embedFile("../loader/plugin_prog.bin");
+// Upotettu VSL-plugin-ELF — build.zig kopioi vsl-bin:n tähän (VSL-0).
+const vsl_elf = @embedFile("../loader/vsl_prog.bin");
 
 // Plugin-ELF-tunniste sys_plugin_load a1:lle (ainoa vaiheessa 30).
 pub const PLUGIN_EMBEDDED_ID: u64 = 0;
+// VSL-plugin-ELF-tunniste sys_plugin_load a1:lle (VSL-0, toinen kuva).
+pub const VSL_EMBEDDED_ID: u64 = 1;
 // Plugin-pinon heap-slot — vapaa väli (112-115 spawn, 114 cross-ipc).
 pub const PLUGIN_STACK_SLOT: u64 = 116;
+// VSL-plugin-pinon heap-slot — seuraava vapaa (117 xfer-capboot).
+pub const VSL_STACK_SLOT: u64 = 118;
 // Montako pluginia rekisteriin mahtuu (pieni, mitattava raja).
 pub const MAX_PLUGINS: usize = 8;
 
@@ -75,10 +81,10 @@ fn ensureInit() void {
     registry_init = true;
 }
 
-// Onko embedded-tunniste kelvollinen plugin-ELF (vaihe 30: vain 0).
+// Onko embedded-tunniste kelvollinen plugin-ELF (0=plugin, 1=VSL).
 pub fn isValidEmbeddedId(id: u64) bool {
-    // Ainoa tuettu plugin-binääri.
-    return id == PLUGIN_EMBEDDED_ID;
+    // Kaksi tuettua plugin-binääriä (vaihe 30 + VSL-0).
+    return id == PLUGIN_EMBEDDED_ID or id == VSL_EMBEDDED_ID;
 }
 
 // Upotetun plugin-ELF:n tavut swap-latausta varten (Vaihe 33 paikallaanvaihto).
@@ -87,6 +93,11 @@ pub fn isValidEmbeddedId(id: u64) bool {
 // instanssin samaan pidiin ilman uutta rekisteri-allokaatiota.
 pub fn pluginElf() []const u8 {
     return plugin_elf;
+}
+
+// Upotetun VSL-ELF:n tavut (VSL-0) — erillinen kuva, ei pluginin ylikirjoitusta.
+pub fn vslElf() []const u8 {
+    return vsl_elf;
 }
 
 // Etsi pluginin rekisteri-indeksi pid:llä — null jos ei ladattu plugin.
@@ -183,8 +194,12 @@ pub fn unregisterPlugin(pid: u64) bool {
 
 // Lataa plugin-ELF uudelle pid:lle omaan sivutauluun — palauttaa pid tai null.
 pub fn loadPlugin(embedded_id: u64) ?u64 {
-    // Vain tunnettu plugin-ELF kelpaa.
+    // Vain tunnetut plugin-ELF:t kelpaavat (0=plugin, 1=VSL).
     if (!isValidEmbeddedId(embedded_id)) return null;
+    // Valitse ladattava kuva + pinon slotti tunnisteen mukaan.
+    const image: []const u8 = if (embedded_id == VSL_EMBEDDED_ID) vsl_elf else plugin_elf;
+    // VSL:llä oma pinon heap-slot (118), muilla plugin-slot (116).
+    const stack_slot: u64 = if (embedded_id == VSL_EMBEDDED_ID) VSL_STACK_SLOT else PLUGIN_STACK_SLOT;
     // Allokoi seuraava vapaa pid prosessitaulukosta.
     const pid = process.allocNextPid() orelse return null;
     // Aseta vanhemmaksi nykyinen prosessi (unload-oikeus lataajalle).
@@ -218,8 +233,8 @@ pub fn loadPlugin(embedded_id: u64) ?u64 {
     }
     // Kohdista kartoitukset pluginin PML4:ään.
     vmm.target_pml4_phys = pml4_phys;
-    // Lataa ELF-segmentit + pino kohteen sivutauluun.
-    const loaded = elf.loadElfWithStack(plugin_elf, PLUGIN_STACK_SLOT) orelse {
+    // Lataa ELF-segmentit + pino kohteen sivutauluun (kuva+slotti id:n mukaan).
+    const loaded = elf.loadElfWithStack(image, stack_slot) orelse {
         // Palauta kernelin PML4.
         vmm.target_pml4_phys = null;
         // Siivoa kehys + taulu + pid.
@@ -230,8 +245,8 @@ pub fn loadPlugin(embedded_id: u64) ?u64 {
     };
     // Takaisin kernelin PML4:ään.
     vmm.target_pml4_phys = null;
-    // Tallenna entry/pino prosessitaulukkoon runPlugin:ia varten.
-    if (!process.setLoaded(pid, loaded.entry, loaded.stack_top, PLUGIN_STACK_SLOT)) {
+    // Tallenna entry/pino prosessitaulukkoon runPlugin:ia varten (sama slotti).
+    if (!process.setLoaded(pid, loaded.entry, loaded.stack_top, stack_slot)) {
         // Siivoa kehys + taulu + pid (segmentit jäävät orvoiksi — ei jakoa).
         pmm.freeFrame(frame);
         _ = process.setPageTable(pid, 0);

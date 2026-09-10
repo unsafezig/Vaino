@@ -208,8 +208,10 @@ pub fn runBootTest() void {
             return;
         }
     }
-    // Negatiivi 2: peukaloitu oikeusmaski → BadMac.
-    var evil = wire;
+    // Negatiivi 2: tuore nonce + peukaloitu oikeusmaski → BadMac.
+    // (Replay-ikkuna tarkistetaan ennen MAC:ia, joten jo avatun kuoren
+    //  peukalointi vastaisi Replay — tuore sulkeminen todistaa MAC-portin.)
+    var evil = tun.sealNext(NODE_A, pid_a, demo_slot, NODE_B, scope.MASK_RECV);
     evil.grant.rights_mask ^= scope.MASK_SEND;
     if (tun.open(&evil)) |_| {
         log.err("Federate tamper accepted");

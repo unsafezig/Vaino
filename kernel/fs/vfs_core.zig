@@ -41,6 +41,9 @@ pub const FileSystemOps = struct {
     read: *const fn (node: *anyopaque, buf: []u8, offset: u64) VfsError!usize,
     // Sulje solmu ja vapauta resurssit.
     close: *const fn (node: *anyopaque) void,
+    // Kirjoita data solmuun offsetista — null = read-only FS (VSL-2 tmpfs
+    // toteuttaa, testfs ei). Valinnainen jotta read-only FS:t eivät hajoa.
+    write: ?*const fn (node: *anyopaque, buf: []const u8, offset: u64) VfsError!usize = null,
 };
 
 // Yksi rekisteröity mount (prefix + ops-vtable).
@@ -240,6 +243,25 @@ pub fn read(handle: FileHandle, buf: []u8, offset: u64) VfsError!usize {
     const mount = &mounts[entry.mount_idx];
     // Delegoi FS:lle luku.
     return mount.ops.read(entry.node, buf, offset);
+}
+
+// Kirjoita avoimeen tiedostoon offsetista (VSL-2).
+pub fn write(handle: FileHandle, buf: []const u8, offset: u64) VfsError!usize {
+    // Ydin alustettava ensin.
+    if (!initialized) return VfsError.NotInitialized;
+    // Kahva indeksinä taulukkoon.
+    const idx: usize = @intCast(handle);
+    // Indeksi ulos rajojen?
+    if (idx >= MAX_OPEN_FILES) return VfsError.NotFound;
+    // Kahva ei käytössä?
+    if (!open_files[idx].used) return VfsError.NotFound;
+    // Mount ja solmu.
+    const entry = &open_files[idx];
+    const mount = &mounts[entry.mount_idx];
+    // Read-only FS (write-op puuttuu) → NotSupported, ei hiljaista hylkäystä.
+    const w = mount.ops.write orelse return VfsError.NotSupported;
+    // Delegoi FS:lle kirjoitus.
+    return w(entry.node, buf, offset);
 }
 
 // Sulje avoin tiedosto kahvalla.

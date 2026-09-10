@@ -13,6 +13,10 @@ const log = @import("../lib/log.zig");
 
 // Uudelleenexportoi ydin vakiot.
 pub const MAX_FILES = core.MAX_FILES;
+// Uudelleenexportoi kirjoitus + listaus VSL-shell-boot-polulle (VSL-2).
+pub const addFile = core.addFile;
+pub const fileCount = core.fileCount;
+pub const fileNameAt = core.fileNameAt;
 
 // Boot-testitiedoston polku mountin sisällä.
 const BOOT_FILE_PATH = "/welcome";
@@ -54,6 +58,27 @@ fn vfsClose(node: *anyopaque) void {
     core.close(file);
 }
 
+// VFS write-callback — delegoi tmpfs-ytimeen (VSL-2).
+fn vfsWrite(node: *anyopaque, buf: []const u8, offset: u64) vfs.VfsError!usize {
+    // Palauta solmu TmpfsFile-muotoon.
+    const file: *core.TmpfsFile = @ptrCast(@alignCast(node));
+    // Rakenna polkuviipale solmun nimipuskurista.
+    const path = file.name[0..file.name_len];
+    // Kirjoita ytimeen (virheet VFS-muotoon).
+    return core.writeFile(path, buf, offset) catch |err| switch (err) {
+        // Tiedosto katosi kesken (ei pitäisi tapahtua) → NotFound.
+        error.NotFound => return vfs.VfsError.NotFound,
+        // Liian suuri kirjoitus → NotSupported (vastalause, ei katkaisua).
+        error.NotSupported => return vfs.VfsError.NotSupported,
+        // Huono polku/offset → InvalidPath.
+        error.InvalidPath => return vfs.VfsError.InvalidPath,
+        // Ei tilaa uudelle (ei tapahdu kirjoituksessa) → TooManyFiles.
+        error.TooManyFiles => return vfs.VfsError.TooManyFiles,
+        // Alustamaton → NotInitialized.
+        error.NotInitialized => return vfs.VfsError.NotInitialized,
+    };
+}
+
 // tmpfs ops-vtable VFS-mountille.
 const tmpfs_ops = vfs.FileSystemOps{
     // Nimi boot-logissa.
@@ -64,6 +89,8 @@ const tmpfs_ops = vfs.FileSystemOps{
     .read = vfsRead,
     // Sulje tiedosto.
     .close = vfsClose,
+    // Kirjoita tiedostoon (VSL-2).
+    .write = vfsWrite,
 };
 
 // Alusta tmpfs — tyhjennä taulukko ja lisää boot-tiedosto.

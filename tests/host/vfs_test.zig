@@ -25,3 +25,17 @@ test "vfs invalid path" {
     const result = vfs.open("");
     try std.testing.expectError(vfs.VfsError.InvalidPath, result);
 }
+
+test "vfs write rejected on read-only testfs" {
+    // Puhdas tila + test-mount (ei write-opta).
+    vfs.initCore();
+    try vfs.registerTestMount();
+    // Avaa lukuun.
+    const h = try vfs.open("/test/hello");
+    // Kirjoitus read-only FS:ään → NotSupported (ei hiljaista hylkäystä).
+    var buf: [4]u8 = .{ 'x', 'x', 'x', 'x' };
+    const result = vfs.write(h, &buf, 0);
+    try std.testing.expectError(vfs.VfsError.NotSupported, result);
+    // Sulje kahva.
+    vfs.close(h);
+}

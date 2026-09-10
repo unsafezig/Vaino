@@ -13,6 +13,10 @@ const vga = @import("../drivers/video/vga.zig");
 
 // Sisäinen tila — onko lokitus alustettu.
 var initialized: bool = false;
+// Laskuri tulostetuista virheistä — K2-portti: boot-testien jokainen
+// epäonnistuminen kulkee log.err:in kautta, joten nollasta poikkeava
+// luku tarkoittaa että jokin suite keskeytyi (ei hiljaisia feilejä).
+var err_count: u32 = 0;
 // Tallennettu boot-info (framebuffer vs VGA -valinta tulevaisuudessa).
 var stored_boot_info: limine.BootInfo = undefined;
 
@@ -60,12 +64,22 @@ pub fn warn(comptime msg: []const u8) void {
 }
 
 // Tulosta virheviesti (sama kanava kuin info, etuliite tulevaisuudessa).
+// Sivuvaikutus: kasvattaa err-laskuria (K2) — boot-kontekstissa log.err
+// on aina testiepäonnistumisen signaali, ei koskaan odotettu loki.
 pub fn err(comptime msg: []const u8) void {
     if (!initialized) return;
+    // Rekisteröi virhe porttia varten (saturaatio — ei kierry nollaan).
+    err_count = err_count +| 1;
     uart.write("[ERR] ");
     uart.write(msg);
     uart.putc('\n');
     vga.write("[ERR] ");
     vga.write(msg);
     vga.putc('\n');
+}
+
+// Montako virhettä tulostettu bootin aikana — K2-verdict (0 = kaikki OK).
+pub fn errCount() u32 {
+    // Palauta laskuri.
+    return err_count;
 }
