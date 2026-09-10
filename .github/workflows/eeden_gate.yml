@@ -1,0 +1,141 @@
+# Eeden Gate — autonomous lifecycle gate (Phase 37.4).
+#
+# Requires BOTH halves (EEDEN_DEMO.md): the fast-forwarded 30-day simulation
+# (host, milliseconds) AND the lifecycle mechanism on a real kernel (QEMU).
+# Passing one half is not passing.
+
+name: Eeden Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Prevent multiple gate runs for the same PR/branch from piling up.
+concurrency:
+  group: eeden-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+
+    # A hung kernel or sim must fail the gate, never the runner.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache: false
+
+      - name: Install ISO/QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorriso qemu-system-x86
+
+      # ------------------------------------------------------------
+      # Half 1: host unit tests (all phases, incl. eeden sim + metrics)
+      # ------------------------------------------------------------
+
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          timeout --foreground -k 10s 5m \
+            zig build test 2>&1 | tee eeden-unit-test.log
+
+      # ------------------------------------------------------------
+      # Half 1b: fast-forwarded 30-day gate (sim + metrics + verdict).
+      #
+      # Non-zero exit = FAILED (the tool names the broken check).
+      # ------------------------------------------------------------
+
+      - name: Eeden gate simulation
+        run: |
+          set -o pipefail
+          timeout --foreground -k 10s 5m \
+            zig build eeden-gate 2>&1 | tee eeden-gate.log
+
+          grep -q "Eeden Gate: PASSED" eeden-gate.log || {
+            echo "::error::Missing 'Eeden Gate: PASSED' in simulation output"
+            exit 1
+          }
+
+      # ------------------------------------------------------------
+      # Half 2: lifecycle mechanism on a real kernel (QEMU).
+      #
+      # The kernel replays birth → composition → run → death through the
+      # same scope gates and must end core-only with the same verdict line.
+      # ------------------------------------------------------------
+
+      - name: Full boot integration tests (incl. Eeden lifecycle)
+        run: |
+          set -o pipefail
+
+          echo "=== Starting full boot integration tests ==="
+          echo "Timeout: 180 seconds"
+          echo
+
+          timeout --foreground -k 10s 180s \
+            zig build boot-test 2>&1 | tee eeden-boot-full.log
+
+          status=${PIPESTATUS[0]}
+
+          echo
+          echo "=== Full boot exit status: $status ==="
+
+          if [ "$status" -eq 124 ]; then
+            echo "::error::Full boot tests timed out after 180 seconds."
+            exit 124
+          fi
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Full boot tests failed with exit code $status."
+            exit "$status"
+          fi
+
+          grep -q "All boot tests OK" eeden-boot-full.log || {
+            echo "::error::Missing 'All boot tests OK' marker."
+            exit 1
+          }
+
+          grep -q "Eeden Gate: PASSED" eeden-boot-full.log || {
+            echo "::error::Missing kernel-side 'Eeden Gate: PASSED' marker."
+            exit 1
+          }
+
+          echo "Eeden lifecycle mechanism OK."
+
+      # ------------------------------------------------------------
+      # Always preserve diagnostics.
+      # ------------------------------------------------------------
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          echo "=== Eeden gate diagnostics ==="
+
+          echo
+          echo "=== Eeden gate log tail ==="
+          tail -30 eeden-gate.log 2>/dev/null || true
+
+          echo
+          echo "=== Full boot log tail ==="
+          tail -60 eeden-boot-full.log 2>/dev/null || true
+
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zinux-eeden-gate-logs-${{ github.run_id }}
+          path: |
+            eeden-unit-test.log
+            eeden-gate.log
+            eeden-boot-full.log
+          if-no-files-found: ignore
+          retention-days: 14

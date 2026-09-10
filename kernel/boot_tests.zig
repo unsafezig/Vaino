@@ -209,6 +209,9 @@ pub fn runAll() void {
     // Vaihe 36 — laite generointi: sensori → plan → ajuri → mittaus → tuho.
     const hw_lifecycle = @import("hw_lifecycle.zig");
     hw_lifecycle.runBootTest();
+    // Vaihe 37 — Eeden-elinkaari: synny → palvele → hajoa (mekanismi QEMU:ssa).
+    const eeden = @import("eeden.zig");
+    eeden.runBootTest();
     // Kaikki integraatiotestit ajettu.
     log.info("All boot tests OK");
 }

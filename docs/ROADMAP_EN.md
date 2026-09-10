@@ -895,18 +895,46 @@ zig build boot-test
 - `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
 - QEMU `boot-test` serial (`Unknown device detected`, `Driver active: temp=23.4C`, `Driver destroyed`) → pending CI (no QEMU/xorriso on dev machine, same as phases 29–35).
 
-#### Phase 37 — Eeden Gate (Autonomous Lifecycle)
+#### Phase 37 — Eeden Gate (Autonomous Lifecycle) ✅
 
 > **Goal**: End-to-end self-verification: boot → compose → run → decompose → core only.
 
 | # | Task | File | Status |
 |---|------|------|--------|
-| 37.1 | 30-day autonomous simulation spec | `docs/EEDEN_DEMO.md` | ⬜ |
-| 37.2 | Lifecycle metrics collector (boot/composition/stability/failover) | `tests/eeden_metrics/` | ⬜ |
-| 37.3 | Final philosophy doc: "Zinux is a foundation for building operating systems" | `docs/EEDEN.md` | ⬜ |
-| 37.4 | CI gate step (fast-forwarded simulation) | `.github/workflows/eeden_gate.yml` | ⬜ |
+| 37.1 | 30-day autonomous simulation spec | `docs/EEDEN_DEMO.md` | ✅ timeline + fast-forward mapping + falsifiability |
+| 37.2 | Lifecycle metrics collector (boot/composition/stability/failover) | `tests/eeden_metrics/` | ✅ `sim.zig` (real cores, virtual clock) + `metrics.zig` (10 checks) + `eeden-gate` tool |
+| 37.3 | Final philosophy doc: "Zinux is a foundation for building operating systems" | `docs/EEDEN.md` | ✅ birth/life/death + guarantees + prior art |
+| 37.4 | CI gate step (fast-forwarded simulation) | `.github/workflows/eeden_gate.yml` | ✅ sim gate + QEMU mechanism gate (both required) |
 
 **Dependency**: All previous phases.
+
+**Test**:
+```bash
+zig build test
+# eeden sim + gate host tests OK (135 passed)
+zig build eeden-gate
+# [Zinux] Boot ... Running (30 days simulated) ... Core only
+# eeden-metrics: compositions=1/1 faults=6 crashes=1 heals=5 migrations=1 failovers=1 tunnel_grants=1 uptime_days=30
+# [Zinux] Eeden Gate: PASSED
+zig build boot-test
+# Expected serial: Eeden boot ... Eeden core only, Eeden Gate: PASSED, All boot tests OK
+```
+
+**Implementation summary:**
+- **Demo spec** (`docs/EEDEN_DEMO.md`): day-by-day timeline (fault days 3/7/12/19/26 with a deliberate double-fault crash on day 12, migration day 14, silence day 21, detection day 22, done day 29), fast-forward mapping (1 day = 1000 ticks, no wall-clock/randomness), 10-check gate table, and what would falsify it.
+- **Simulation** (`tests/eeden_metrics/sim.zig`, pure, drives the REAL cores — TDL parse/resolve, diag, tunnel seal/open, migrate plan, cluster sweep, decomposer predicate — on a virtual clock): `run() → Report` with 13 counters/flags; byte-identical across runs (host-tested).
+- **Metrics** (`tests/eeden_metrics/metrics.zig`, dependency-free): `evaluate(anytype) → Verdict{failed_mask}` over 10 checks (`boot_ok`, `task_ok`, `compositions_done>=1`, `heals>=fault_days`, `migrations>=1`, `failovers==1`, `tunnel_grants_ok>=1`, `uptime_days>=30`, `deadline_ok`, `core_only`); evaluates hand-built bad reports too.
+- **Gate tool** (`tools/eeden_gate.zig` + `zig build eeden-gate`, Phase-32 tool precedent): prints the appendix serials verbatim with REAL counters from the same run, exits 0/1 (failure names each broken check).
+- **Kernel mechanism** (`kernel/eeden.zig`, freestanding, last boot test): replays birth→compose→run→death through the Phase 34 orchestrator with QEMU-honest serials (no "30 days" claim on hardware) ending in `Eeden Gate: PASSED` + verified core-only.
+- **CI gate** (`.github/workflows/eeden_gate.yml`): unit tests → `eeden-gate` sim (greps verdict) → full QEMU `boot-test` (greps `All boot tests OK` AND kernel-side `Eeden Gate: PASSED`). Either half failing closes the gate.
+- **Philosophy** (`docs/EEDEN.md`): birth/life/death, what Zinux is not, four tested guarantees, honored prior art, and the end state — *"Zinux does not maintain itself. It re-becomes itself."*
+- **Key design decision**: two halves, neither sufficient alone — the sim cannot load ELFs, QEMU cannot wait 30 days; the gate requires both, and each side honestly labels what it proves.
+
+**Verification evidence (2026-09-10):**
+- `zig build test --summary all` → 135 host tests passed (131 baseline + 3 new eeden tests + 1 import shim).
+- `zig build eeden-gate` → `Eeden Gate: PASSED` with the exact appendix serials and measured counters.
+- `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
+- QEMU `boot-test` (kernel-side `Eeden boot … Eeden Gate: PASSED`) → pending local run (no QEMU/xorriso on dev machine); CI `eeden_gate.yml` runs it with marker greps.
 
 ---
 

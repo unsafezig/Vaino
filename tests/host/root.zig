@@ -160,3 +160,8 @@ test {
 test {
     _ = @import("hw_test.zig");
 }
+
+// Tuo Eeden-portin testit: simulaation mittarit + kynnykset (Vaihe 37).
+test {
+    _ = @import("eeden_gate_test.zig");
+}

@@ -1023,6 +1023,27 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("hw_gen", hw_gen_mod);
+    // Vaihe 37.2 — Eeden-simulaatio host-testeihin (todelliset ytimet).
+    const eeden_sim_mod = b.createModule(.{
+        .root_source_file = b.path("tests/eeden_metrics/sim.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    eeden_sim_mod.addImport("composer_task", composer_task_mod);
+    eeden_sim_mod.addImport("composer_resolve", composer_resolve_mod);
+    eeden_sim_mod.addImport("plugin_diag_core", plugin_diag_core_mod);
+    eeden_sim_mod.addImport("fed_tunnel", fed_tunnel_mod);
+    eeden_sim_mod.addImport("fed_migrate", fed_migrate_mod);
+    eeden_sim_mod.addImport("fed_failover", fed_failover_mod);
+    eeden_sim_mod.addImport("decomposer_core", decomposer_core_mod);
+    host_test_mod.addImport("eeden_sim", eeden_sim_mod);
+    // Vaihe 37.2 — Eeden-porttikriteerit host-testeihin (riippuvuudeton).
+    const eeden_metrics_mod = b.createModule(.{
+        .root_source_file = b.path("tests/eeden_metrics/metrics.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("eeden_metrics", eeden_metrics_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });
@@ -1075,6 +1096,24 @@ pub fn build(b: *std.Build) void {
     run_verify.step.dependOn(&fetch_pkg.step);
     const install_step = b.step("plugin-install", "Fetch, Ed25519-verify and install a plugin package");
     install_step.dependOn(&run_verify.step);
+
+    // --- Vaihe 37 — eeden-gate: pikakelattu 30 päivän elinkaariportti ---
+    // Käyttö: zig build eeden-gate (exit 0 = PASSED, 1 = FAILED + syy rivissä).
+    // Ajaa saman simun + kynnykset kuin host-testit, mutta porttityökaluna.
+    const eeden_gate_mod = b.createModule(.{
+        .root_source_file = b.path("tools/eeden_gate.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    eeden_gate_mod.addImport("eeden_sim", eeden_sim_mod);
+    eeden_gate_mod.addImport("eeden_metrics", eeden_metrics_mod);
+    const eeden_gate_exe = b.addExecutable(.{
+        .name = "zinux-eeden-gate",
+        .root_module = eeden_gate_mod,
+    });
+    const run_eeden_gate = b.addRunArtifact(eeden_gate_exe);
+    const eeden_gate_step = b.step("eeden-gate", "Fast-forwarded 30-day lifecycle gate (sim + metrics + verdict)");
+    eeden_gate_step.dependOn(&run_eeden_gate.step);
 
     // --- Limine binary fetch + host tool build ---
     const cache_path_raw = b.pathFromRoot(limine_cache);
