@@ -859,18 +859,41 @@ zig build boot-test
 - Ground-truth cross-check: all 4 crypto vectors verified byte-for-byte against Python `hashlib`/`hmac` before acceptance (caught 3 transcription typos — evidence for never trusting hand-copied constants).
 - QEMU `boot-test` serial (`Node A joined`, `Uptime plugin migrated A->B`, `Failover: uptime plugin replicated on B`, `Federated cluster OK`) → pending CI (no QEMU/xorriso on dev machine, same as phases 29–34).
 
-#### Phase 36 — Hardware-as-a-Service (Design / Research)
+#### Phase 36 — Hardware-as-a-Service (Design / Research) ✅
 
 > **Goal**: Device declares capability → driver auto-generated at runtime. No persistent `.ko` files.
 
 | # | Task | File | Status |
 |---|------|------|--------|
-| 36.1 | Hardware capability protocol spec | `docs/HW_CAP_PROTOCOL.md` | ⬜ |
-| 36.2 | Live driver code generator (Zig template expansion) | `kernel/hw_gen.zig` | ⬜ |
-| 36.3 | Driver lifecycle: generate → bind → exec → destroy | `kernel/hw_lifecycle.zig` | ⬜ |
-| 36.4 | "No persistent driver files" design note | `docs/NO_DRIVERS.md` | ⬜ |
+| 36.1 | Hardware capability protocol spec | `docs/HW_CAP_PROTOCOL.md` | ✅ descriptor + plan schema + P1–P4 policy + Termite prior art |
+| 36.2 | Live driver code generator (Zig template expansion) | `kernel/hw_gen.zig` | ✅ pure plan validation + deterministic expansion + fake sensor |
+| 36.3 | Driver lifecycle: generate → bind → exec → destroy | `kernel/hw_lifecycle.zig` | ✅ single active record + `Driver active` boot test |
+| 36.4 | "No persistent driver files" design note | `docs/NO_DRIVERS.md` | ✅ generate→destroy rule + stored/not-stored table |
 
 **Dependency**: Phase 6 (existing drivers as reference for device enumeration). Research phase — defer implementation until Phases 29–35 are stable.
+
+**Test**:
+```bash
+zig build test
+# hw plan + expansion + sensor + exec host tests OK (131 passed)
+zig build boot-test
+# Expected serial: Unknown device detected, Capabilities: temperature, humidity,
+# Generating driver..., Driver active: temp=23.4C, Device detached,
+# Driver destroyed, All boot tests OK
+```
+
+**Implementation summary:**
+- **Protocol** (`docs/HW_CAP_PROTOCOL.md`): 9-layer split (task → hw-info → plan → policy → caps → generated map → validation → sandbox → execution — never collapsed); `HwDescriptor{window, named caps}` + `DriverPlan{ranges, forbidden, straight-line steps, read caps, expect}` with stable error order; P1 console-UART protection, P2 window-subset, P3 bounded execution (≤16 steps, no jumps), P4 mandatory `expect` (counterexample hook). Template class honestly bounded: register-PIO only; DMA/IRQ/firmware are named 36.x experiments.
+- **Generator** (`kernel/hw_gen.zig`, dependency-free pure logic, host-testable): `validate` (subset ∩ policy ∩ caps) + `generate` (precomputed absolute addresses — "generation" is honestly a deterministic map, not a kernel compiler; documented) + `FakeSensor` (ID/STATUS/CTRL-magic/ready-gated measurements/read-only/write-only/range faults with a `faults` counter) + `execSequence` (init in order, reads, `expect` compare — any refusal fails the whole run).
+- **Lifecycle** (`kernel/hw_lifecycle.zig`, freestanding): one active `BoundDriver` record (`generateBind → execActive → destroy`, destroy zeroes it — NO_DRIVERS by construction); boot test proves the eeden serials with 6 negatives first (UART overlap, bad step index, unarmed read, wrong magic, OOB/read-only/write-only, wrong expect) then the positive run (measured 234 tenths verified before the static `23.4C` line) and clean detach/destroy.
+- **No-drivers note** (`docs/NO_DRIVERS.md`): plans (requests) may be kept, grants (bound addresses) die at destroy — policy changes apply retroactively because nothing is stored past the decision; costs stated plainly.
+- **Wiring**: `build.zig` host module `hw_gen` (lifecycle travels relatively, decomposer-pattern); `tests/host/hw_test.zig` (6 tests + import shim) in `tests/host/root.zig`; `hw_lifecycle.runBootTest` in `boot_tests.zig` after Phase 35.
+- **Key design decision**: framework (registration/lifecycle/error frames) is deterministic kernel infrastructure; only the hardware-specific map is "generated" — exactly the AGENTS.md split (*generate the hardware-specific part, not the entire OS*).
+
+**Verification evidence (2026-09-10):**
+- `zig build test --summary all` → 131 host tests passed (124 baseline + 6 new hw tests + 1 import shim).
+- `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
+- QEMU `boot-test` serial (`Unknown device detected`, `Driver active: temp=23.4C`, `Driver destroyed`) → pending CI (no QEMU/xorriso on dev machine, same as phases 29–35).
 
 #### Phase 37 — Eeden Gate (Autonomous Lifecycle)
 

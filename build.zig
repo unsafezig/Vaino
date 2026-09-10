@@ -1016,6 +1016,13 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("fed_failover", fed_failover_mod);
+    // Vaihe 36.2 — laitegenerointiydin host-testeihin (riippuvuudeton).
+    const hw_gen_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/hw_gen.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("hw_gen", hw_gen_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });

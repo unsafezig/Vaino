@@ -155,3 +155,8 @@ test {
 test {
     _ = @import("federate_test.zig");
 }
+
+// Tuo laitegeneroinnin yksikkötestit: plan + laajennus + sensori + ajo (Vaihe 36).
+test {
+    _ = @import("hw_test.zig");
+}

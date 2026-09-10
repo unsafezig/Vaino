@@ -206,6 +206,9 @@ pub fn runAll() void {
     // Vaihe 35 — federaatio: klusteri → tunneli → migraatio → failover.
     const federate = @import("federate.zig");
     federate.runBootTest();
+    // Vaihe 36 — laite generointi: sensori → plan → ajuri → mittaus → tuho.
+    const hw_lifecycle = @import("hw_lifecycle.zig");
+    hw_lifecycle.runBootTest();
     // Kaikki integraatiotestit ajettu.
     log.info("All boot tests OK");
 }
