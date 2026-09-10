@@ -55,8 +55,9 @@ pub const SYS_plugin_unload: u64 = 25;
 // Syscall-numero: sys_plugin_transfer(src_pid, src_slot, dest_pid, rights_mask) → uusi slot tai neg. virhe (Vaihe 31).
 pub const SYS_plugin_transfer: u64 = 26;
 // Syscall-numero: sys_plugin_checkpoint(plugin_pid) → checkpoint-id tai neg. virhe (31.5.2).
-// Vapaa slotti 28 on varattu sys_plugin_restore:lle (31.5.3).
 pub const SYS_plugin_checkpoint: u64 = 27;
+// Syscall-numero: sys_plugin_restore(plugin_pid) → 0 tai neg. virhe (31.5.3).
+pub const SYS_plugin_restore: u64 = 28;
 // Syscall-numero: sys_test_return — palaa kernel boot-testiin (vain kehitys).
 pub const SYS_test_return: u64 = 10;
 

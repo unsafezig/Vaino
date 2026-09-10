@@ -431,3 +431,77 @@ pub fn deleteCheckpointsForPid(pid: u64) u32 {
     return n;
 }
 
+// --- Restore (31.5.3) ---
+//
+// Palauttaa checkpointin sisällön live-sivuille (copy-back) ja W-bitit
+// alkuperäiseen tilaan (ajettava tila — rollback toistettavissa).
+// RAJAUS (rehellinen): capability-slotteja ja rekisteritiedostoa ei
+// kaapata 31.5.2-inventaariossa, joten niitä ei palauteta tässä vaiheessa —
+// sivu-tason rollback, ei täyttä prosessiaikaa. Harkittu vaihtoehto (remap:
+// PTE-osoitin vaihtoon + vanhan kehyksen vapautus) hylätty auditoitavuuden
+// vuoksi: copy-back pitää kehysidentiteetit vakaina ja on tavuittain
+// todennettavissa (boot-testi memcmpaa).
+
+// Restore-virheet — dispatch kartoittaa errnoiksi (NoCheckpoint → ESRCH:
+// ei rollback-pistettä; loput → EINVAL: kohde muuttunut alta).
+pub const RestoreError = error{
+    // Pidillä ei checkpointia.
+    NoCheckpoint,
+    // Ei per-process PML4:ää.
+    NoPageTable,
+    // PML4 vaihtunut checkpointin jälkeen (swap/migraatio — 31.5.3 raja).
+    StaleTable,
+    // Live-kartoitus muuttunut (sivu kadonnut / ei enää user-4K).
+    StaleMapping,
+    // W-bitin palautus epäonnistui.
+    NoRestore,
+};
+
+// Palauta checkpointin sivut liveen: kopio takaisin + W-bitit ennalleen.
+// Checkpoint SÄILYY (toistettava rollback-piste); delete vapauttaa.
+pub fn restorePlugin(pid: u64) RestoreError!void {
+    // Hae pidin checkpoint.
+    const cpid = ckpt.findForPid(pid) orelse return RestoreError.NoCheckpoint;
+    // Hae paikka.
+    const slot = ckpt.slotByCpid(cpid) orelse return RestoreError.NoCheckpoint;
+    // Lue kentät pinomuuttujiin (vakaa luku — paikkaa ei vapauteta tässä).
+    const stored_pml4 = slot.pml4_phys;
+    const n = slot.page_count;
+    // Nykyinen PML4 — staleness-portti ennen yhtäkään kirjoitusta.
+    const live_pml4 = process.getPageTable(pid) orelse return RestoreError.NoPageTable;
+    // Nolla tai vaihtunut taulu → kieltäydy (ei kirjoituksia).
+    if (live_pml4 == 0 or live_pml4 != stored_pml4) return RestoreError.StaleTable;
+    // HHDM-offset kopiointi-ikkunaan.
+    const hhdm = vmm.hhdm();
+    // Käy kopioidut sivut.
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        // Lue metatieto accessoreilla.
+        const v = ckpt.pageVirt(cpid, i) orelse return RestoreError.StaleMapping;
+        const f = ckpt.pageFrame(cpid, i) orelse return RestoreError.StaleMapping;
+        const w = ckpt.pageWasWritable(cpid, i) orelse false;
+        // Live-PTE:n pitää yhä olla present 4K user-lehti.
+        const raw = paging.getPteRaw(live_pml4, hhdm, v) orelse return RestoreError.StaleMapping;
+        // Ei present → kartoitus kadonnut alta.
+        if ((raw & core.FLAG_PRESENT) == 0) return RestoreError.StaleMapping;
+        // Huge/supervisor → ei enää checkpointattua lajia.
+        if ((raw & core.FLAG_HUGE) != 0) return RestoreError.StaleMapping;
+        if ((raw & core.FLAG_USER) == 0) return RestoreError.StaleMapping;
+        // Live-phys PTE:stä (auktoritatiivinen — ei kävelyn arvo).
+        const live_phys = raw & core.PHYS_MASK;
+        // Kopioi checkpoint-kehys takaisin live-sivulle.
+        const src: [*]const u8 = @ptrFromInt(vmm.physToVirt(f));
+        const dst: [*]u8 = @ptrFromInt(vmm.physToVirt(live_phys));
+        // SMAP: salli tilapäisesti (sama ikkuna kuin checkpointissa).
+        user_access.stac();
+        // Kopioi koko sivu takaisin.
+        @memcpy(dst[0..4096], src[0..4096]);
+        // Palauta SMAP-suojaus.
+        user_access.clac();
+        // Palauta alkuperäinen kirjoitettavuus (ajettava tila).
+        if (!paging.setPteWritable(live_pml4, hhdm, v, w)) return RestoreError.NoRestore;
+    }
+    // Päivitä TLB koko taulun osalta (sisältö + W-palautukset).
+    paging.setCr3(paging.getCr3());
+}
+

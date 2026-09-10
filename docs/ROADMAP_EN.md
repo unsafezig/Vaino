@@ -711,7 +711,7 @@ zig build boot-test
 |---|------|------|--------|
 | 31.5.1 | Snapshot struct + page-table walk (U/S-bit boundary, not half) | `kernel/snapshot_core.zig`, `kernel/snapshot.zig` | ✅ pure index/leaf math + freestanding 4-level walk + `Snapshot walk OK` boot test (VSL PML4 anchor, supervisor-skip proof) |
 | 31.5.2 | `sys_plugin_checkpoint(pid)` → dump+W=0 guard | `kernel/snapshot.zig` (store+copy+guard), `kernel/syscall/dispatch.zig` (`SYS_plugin_checkpoint=27`), `kernel/syscall/snapshot_syscall.zig` | ✅ PMM-frame copies + per-page W-clear/invlpg + replace semantics + unload-reclaim + `Snapshot checkpoint OK` (copy memcmp + guard set/restore proof, 0 leaks) |
-| 31.5.3 | `sys_plugin_restore(slot, id)` → remap + restore slots/regs | `kernel/syscall/restore_syscall.zig` | ⬜ |
+| 31.5.3 | `sys_plugin_restore(pid)` → copy-back + W-restore (slots/regs deferred, documented) | `kernel/snapshot.zig` (`restorePlugin`), `kernel/syscall/dispatch.zig` (`SYS_plugin_restore=28`), `kernel/syscall/snapshot_syscall.zig` | ✅ frame→live memcmp-verified copy-back + original-W restore (runnable, repeatable) + stale-table/mapping refusals + `Snapshot restore OK` (2× damage/restore + ghost-ESRCH) |
 | 31.5.4 | Incremental snapshot (dirty-page tracking via #PF) | `kernel/snapshot_delta.zig` | ⬜ |
 | 31.5.5 | Watchdog: auto-restore on crash | `kernel/plugin_watchdog.zig` | ⬜ |
 
@@ -723,6 +723,13 @@ zig build boot-test
 - **Syscall** (`SYS_plugin_checkpoint=27`, slot 28 reserved for restore): BOOT-or-parent rule mirroring unload (ESRCH ghost, EPERM stranger); `NoPageTable/HasHuge/Truncated/NoGuard→EINVAL`, `NoMemory/TableFull→ENOMEM`. Fuzz core marks 27 registered+dangerous.
 - **Boot test** (`kernel/syscall/snapshot_syscall.zig`, walk test moved here verbatim): ghost→ESRCH, cpid>0, page-count==inventory, byte-memcmp of copies vs live, W-bit cleared on a writable page, delete restores W + count==0, unload clean → `Snapshot checkpoint OK`.
 - **Verification:** `zig build test` 159/159, `zig build` + `-Dboot=full` clean, 3× QEMU green with `Snapshot checkpoint OK`, 0 `[ERR]`, downstream suites (heal/federate/scheduler) unaffected.
+
+**31.5.3 implementation summary (2026-09-10):**
+- **Copy-back restore** (`snapshot.restorePlugin`, NOT remap — remap considered and rejected for auditability: copy-back keeps frame identities stable and is byte-verifiable): per page, re-validate live PTE is still a present 4K user leaf (else `StaleMapping`), `memcpy` frame→live, restore original W (runnable, repeatable state — checkpoint retained, `delete` frees).
+- **Staleness discipline:** PML4 compared before any write (`StaleTable` on swap/migration — owned-state migration stays a documented limit); slots/regs explicitly NOT restored (31.5.2 never captured them — page-level rollback only, stated in code + here).
+- **Syscall** (`SYS_plugin_restore=28`): same BOOT-or-parent rule as checkpoint; `NoCheckpoint→ESRCH`, rest→`EINVAL`. Fuzz core: 28 registered+dangerous.
+- **Boot test:** damage first page (0xA5) → `sys_plugin_restore` → memcmp + W-runnable proof → damage (0x5A) → restore again (repeatability) → ghost→ESRCH → `Snapshot restore OK`.
+- **Verification:** host still 159/159 (no new pure logic — boot-covered), freestanding clean, 3× QEMU green with `Snapshot restore OK`, 0 `[ERR]`.
 
 #### Phase 32 — Plugin Ecosystem & Untrusted Distribution ✅
 
@@ -1174,9 +1181,9 @@ indistinguishable from a green boot in CI.
 ```
 ✅ DONE → Phases 0–37: Foundation … Eeden Gate (all green, QEMU serials pending CI)
 ✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
-✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) — 3× green QEMU, 0 [ERR]
+✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) — 3× green QEMU, 0 [ERR]
    ↓
-⬜ NEXT → 31.5.3 `sys_plugin_restore` (remap frames + restore slots/regs from 31.5.2 inventory)
+⬜ NEXT → 31.5.4 incremental snapshot (dirty-page tracking via #PF on the W=0 guard) + Phase 41 VSL-3 (needs restore — now unblocked)
    ↓
 ⬜ THEN → Phase 41 — VSL-3 snapshot-ready state descriptor (needs 31.5.2+)
    ↓

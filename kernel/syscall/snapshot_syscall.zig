@@ -23,6 +23,8 @@ const abi = @import("zinuxabi");
 const paging = @import("../arch/x86_64/paging.zig");
 // Tuo VMM — HHDM-ikkuna kopiovertailuun.
 const vmm = @import("../mm/vmm.zig");
+// Tuo SMAP-yhteensopivuus — stac/clac HHDM-kirjoituksiin.
+const user_access = @import("../arch/x86_64/user_access.zig");
 // Tuo prosessitaulukko — page_table pid:llä.
 const process = @import("process_core");
 // Tuo lokitus boot-viesteihin.
@@ -67,6 +69,32 @@ fn pteWritable(pml4: u64, virt: u64) bool {
     const raw = paging.getPteRaw(pml4, vmm.hhdm(), virt) orelse return false;
     // Bitti 1 ratkaisee.
     return (raw & 0x2) != 0;
+}
+
+// Kirjoita testikuvio live-sivun alkuun HHDM-ikkunasta (simuloi mutaatiota/
+// tuhoa jota restore korjaa; plugin ei aja tässä testissä, joten koodisivun
+// vahingoittaminen on turvallista — restore palauttaa sen välittömästi).
+fn damagePage(live_phys: u64, pat: u8) void {
+    // Sivu CPU-osoitteeseen.
+    const p: [*]u8 = @ptrFromInt(vmm.physToVirt(live_phys));
+    // SMAP: salli tilapäisesti.
+    user_access.stac();
+    // Kuvio ensimmäiseen 64 tavuun (riittää erotteluun, säästää aikaa).
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        // Kirjoita kuviotavu.
+        p[i] = pat;
+    }
+    // Palauta SMAP-suojaus.
+    user_access.clac();
+}
+
+// Lue live-sivun ensimmäinen tavu HHDM-ikkunasta (vahinkotarkistus).
+fn firstByte(live_phys: u64) u8 {
+    // Sivu CPU-osoitteeseen (vain luku — ei stac-tarvetta supervisor-aliaksessa).
+    const p: [*]const u8 = @ptrFromInt(vmm.physToVirt(live_phys));
+    // Palauta tavu.
+    return p[0];
 }
 
 // Boot-testi — walk (31.5.1, siirretty snapshot.zig:stä) + checkpoint (31.5.2).
@@ -215,6 +243,96 @@ pub fn runBootTest() void {
         _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
         return;
     }
+    // --- 31.5.3: restore-demo (damage → restore → verify, kahdesti) ---
+    // Vahingoita ensimmäistä inventoitua sivua (plugin ei aja — turvallista).
+    // Live-phys inventaariosta (sama kävely kuin checkpointissa).
+    const dmg_phys = snap.pages[0].phys;
+    // Kierros 1: kuvio A5 → restore → sisältö + W-bitit ennalleen.
+    damagePage(dmg_phys, 0xA5);
+    // Vahinko näkyvissä (sanity: kirjoitus osui).
+    if (firstByte(dmg_phys) != 0xA5) {
+        // Kirjoitus ei uponnut — testiympäristö rikki.
+        log.err("Snapshot damage failed");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Restore syscallin kautta (cpid säilyy — toistettava rollback).
+    if (dispatch.invoke(abi.SYS_plugin_restore, pid, 0, 0, 0, 0, 0) != 0) {
+        // Restore epäonnistui.
+        log.err("Snapshot restore failed");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Sisältö palautunut checkpoint-kopioon (vertaa kehystä liveen).
+    const f0 = snapshot.checkpointPageFrame(cpid, 0) orelse {
+        // Kehys katosi restoren aikana.
+        log.err("Snapshot frame lost");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    };
+    if (!pagesEqual(f0, dmg_phys)) {
+        // Live ei täsmää kopiota restoren jälkeen.
+        log.err("Snapshot restore mismatch");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // W-bitti palautunut ajokelpoiseksi (was_writable → true).
+    if (!pteWritable(pml4, wv)) {
+        // Sivu yhä suojattu restoren jälkeen — ei ajokelpoinen.
+        log.err("Snapshot restore nowrite");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Kierros 2: eri kuvio (5A) → restore → toistettavuustodiste.
+    damagePage(dmg_phys, 0x5A);
+    // Vahinko näkyvissä.
+    if (firstByte(dmg_phys) != 0x5A) {
+        // Toinen kirjoitus ei uponnut.
+        log.err("Snapshot redamage failed");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Restore uudelleen (sama checkpoint — ei uutta kopiota).
+    if (dispatch.invoke(abi.SYS_plugin_restore, pid, 0, 0, 0, 0, 0) != 0) {
+        // Toinen restore epäonnistui.
+        log.err("Snapshot rerestore failed");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Sisältö jälleen kopion mukainen (sama kehys, sama live).
+    if (!pagesEqual(f0, dmg_phys)) {
+        // Toinen palautus ei täsmää.
+        log.err("Snapshot rerestore mismatch");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Negatiivi: restore ilman checkpointia (haamu-pid) → ESRCH.
+    if (dispatch.invoke(abi.SYS_plugin_restore, 0xFFFF, 0, 0, 0, 0, 0) != abi.ESRCH) {
+        // Haamu-restore meni läpi.
+        log.err("Snapshot ghost restore not ESRCH");
+        // Siivoa checkpoint + lataus.
+        _ = snapshot.deleteCheckpoint(cpid);
+        _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
+        return;
+    }
+    // Kaksi damage/restore-kierrosta + ghost-hylkäys OK.
+    log.info("Snapshot restore OK");
     // Poista checkpoint: W-bitit palautuvat + kehykset vapautuvat.
     if (!snapshot.deleteCheckpoint(cpid)) {
         // Poisto epäonnistui.

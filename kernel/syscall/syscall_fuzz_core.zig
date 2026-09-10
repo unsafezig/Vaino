@@ -73,6 +73,8 @@ pub fn isRegistered(num: u64) bool {
         26 => true,
         // sys_plugin_checkpoint (31.5.2) — kopioi sivuja + suojaa PTE:itä fuzzissa.
         27 => true,
+        // sys_plugin_restore (31.5.3) — kopioi kehyksiä + mutatoi PTE:itä fuzzissa.
+        28 => true,
         // Kaikki muut slotit tyhjät tai taulukon ulkopuolella.
         else => false,
     };
@@ -132,6 +134,8 @@ pub fn isDangerous(num: u64) bool {
         26 => true,
         // sys_plugin_checkpoint — allokoi kehyksiä + mutatoi PTE:itä fuzzissa.
         27 => true,
+        // sys_plugin_restore — kopioi kehyksiä + mutatoi PTE:itä fuzzissa.
+        28 => true,
         // Muut numerot turvallisia tai ENOSYS.
         else => false,
     };

@@ -744,6 +744,34 @@ fn sysPluginCheckpoint(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
     return @intCast(cpid);
 }
 
+// sys_plugin_restore — palauta checkpointin sivut liveen (31.5.3).
+// ABI: RAX=28, RDI=plugin_pid → 0 tai neg. virhe. Checkpoint SÄILYY
+// (toistettava rollback); delete vapauttaa. Sama lupa kuin checkpointissa.
+fn sysPluginRestore(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
+    // Palautettavan pluginin pid.
+    const pid = a1;
+    // Ei rekisteröity plugin.
+    if (!plugin_loader.isPlugin(pid)) return abi.ESRCH;
+    // Kutsuja + rekisteröity lataaja oikeustarkistukseen.
+    const caller = process.currentPid();
+    // Lataaja-parent selville.
+    const owner = plugin_loader.pluginParent(pid) orelse return abi.ESRCH;
+    // Vain lataaja tai boot saa palauttaa.
+    if (caller != owner and caller != process.BOOT_PID) return abi.EPERM;
+    // Kopioi takaisin + palauta W-bitit.
+    snapshot.restorePlugin(pid) catch |err| switch (err) {
+        // Ei rollback-pistettä → ESRCH.
+        error.NoCheckpoint => return abi.ESRCH,
+        // Kohde muuttunut alta / PTE-virhe → EINVAL.
+        error.NoPageTable => return abi.EINVAL,
+        error.StaleTable => return abi.EINVAL,
+        error.StaleMapping => return abi.EINVAL,
+        error.NoRestore => return abi.EINVAL,
+    };
+    // Onnistui.
+    return 0;
+}
+
 // Dispatch-taulukko — indeksi = syscall-numero (max 31).
 const handlers: [32]?SyscallFn = blk: {
     // Alusta kaikki merkinnät tyhjiksi.
@@ -802,6 +830,8 @@ const handlers: [32]?SyscallFn = blk: {
     table[@intCast(abi.SYS_plugin_transfer)] = sysPluginTransfer;
     // Rekisteröi sys_plugin_checkpoint (sivukopio + W=0-suojaus, 31.5.2).
     table[@intCast(abi.SYS_plugin_checkpoint)] = sysPluginCheckpoint;
+    // Rekisteröi sys_plugin_restore (copy-back + W-palautus, 31.5.3).
+    table[@intCast(abi.SYS_plugin_restore)] = sysPluginRestore;
     // Palauta valmis taulukko.
     break :blk table;
 };
