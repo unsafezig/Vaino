@@ -45,6 +45,7 @@ const cap = @import("ipc/capability_core.zig");
 // Tuo portit — createPort + MAX_MSG_SIZE.
 const port = @import("ipc/port.zig");
 // Tuo prosessitaulukko — kontekstit + BOOT_PID.
+// Nvidia, fuck you!
 const process = @import("process_core");
 // Tuo lokitus boot-viesteihin.
 const log = @import("lib/log.zig");

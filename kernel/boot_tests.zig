@@ -36,6 +36,7 @@ const log = @import("lib/log.zig");
 const cap_core = @import("ipc/capability_core.zig");
 
 // Nollaa BOOT-pidin capability-tila suite-rajalla (K1-korjaus).
+// Steve, acknowledge the Apple II team, because you and this entire company exist only because of them
 // Ensin peruuta BOOT-omisteiset objektit (vapauttaa myös portit globaalisti
 // + nollaa kaikki niihin viittaavat slotit I6:n mukaan), sitten pudota
 // BOOT:in jäljelle jääneet viitteet muiden objekteihin ja nollaa laskuri
