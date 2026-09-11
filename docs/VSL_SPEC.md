@@ -133,3 +133,38 @@ ei VT-x:ää, ei IRQ/MMIO-cap-tyyppejä coressa VSL:ää varten, ei
   `vsl-cat: TMPFS` → `hello-vsl`-takaisinluku → `VSL fs OK`.
 * Ring-3-rajoite ennallaan: tiedosto-I/O kulkee boot-polulla kunnes
   fd-syscallit (VSL-4). `openat` yhä ENOSYS shimissä.
+
+## 11. VSL-4 suunta (speksi ennen koodia, 2026-09-11) ⬜
+
+> Research-first (AGENTS.md): tavoite + rajat + kumottavuus kirjataan
+> ennen ensimmäistä koodiriviä. Kumpikaan säie ei opeta kerneliin Linuxia —
+> VSL opettelee Zinuxia (core pysyy puhtaana).
+
+| Säie | Tavoite | Kokoarvio |
+|------|---------|-----------|
+| **4A** | fd-syscallit ring-3:ssa (`open/read/close` VFS-taustalla, `isIoReady(file)=true`) | Pieni, mitattava koe |
+| **4B** | Trap-and-emulate muokkaamattomille Linux-ELF:eille (Linux-syscall → Zinux-käännös trap-polulla) | Suurin kernel-työ sitten 31.5:n |
+
+**4A-suunnitelma (seuraava koodisäie):** uusi syscall-perhe (`SYS_vfs_open/read/close`
+tai fd-avaimet olemassaoleviin, `dispatch`-tauluun ≤32 rajaan), VFS-polku
+ring-3-kutsuvalmiiksi (nykyinen boot-polku eriytetään user-copy-rajalla),
+shim (`vsl_libc`: `openat` ENOSYS → toimiva), fd-taulun `file`-kind
+`isIoReady=true`. Boot-todiste: ring-3 `open("/tmp/welcome") → read → close`
++ negatiivit (BADF, NotFound). Ei uusia cap-tyyppejä (port+memory riittävät).
+
+**4B-rajaus (tutkimusvaihe, ei lupausta):** edellyttää per-plugin
+syscall-pysäytystä (IDT/`syscall_entry`-haara + Linux-numeroiden käännös
+`linux_abi`-taululla) sekä VSL-4-rekisterikaappausta (`VslState.regs`
+täyttyy ensi kertaa). Avoin kysymys: signaalit + `fork`-semantiikka rajataan
+ulos ensimmäisestä kokeesta (ENOSYS + dokumentoitu syy). Onnistumiskriteeri
+etukäteen: staattisesti käännetty `hello`-Linux-ELF tulostaa UART:iin ilman
+shim-uudelleenlinkitystä; epäonnistuminenkin kirjataan (negative result).
+
+**Yhteiset ei-tavoitteet (voimassa 4A+4B):** ei täyttä POSIXia/busyboxia, ei
+verkkoa, ei virtio-writeä, ei VT-x/EPT:tä (vaihtoehto B yhä hylätty —
+paluu vasta kun 4B todistaa käännösmallin), ei IRQ/MMIO-cap-tyyppejä VSL:ää
+varten, ei `dispatch`-taulua yli 32:n ilman mitattua tarvetta.
+
+**Metriikat (AGENTS.md: Measurement):** käännettyjen vs. ENOSYS-hylättyjen
+suhde (4A: fd-opit, 4B: trap-vektorit), myönnetyt/evätyt capit per
+VSL-lataus, spec-burden (tämä luku + `linux_abi`-diff vs. boilerplate).
