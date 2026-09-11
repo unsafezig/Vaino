@@ -817,6 +817,29 @@ pub fn build(b: *std.Build) void {
     copy_dirty_test_elf.addFileArg(embedded_dirty_test_path);
     copy_dirty_test_elf.step.dependOn(&dirty_test_exe.step);
 
+    // --- Crash-test ELF (31.5.5) — upotetaan kerneliin embedded_id=3 ---
+    const crash_test_mod = b.createModule(.{
+        .root_source_file = b.path("userland/crash_test/main.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    crash_test_mod.red_zone = false;
+    crash_test_mod.stack_protector = false;
+    crash_test_mod.single_threaded = true;
+    const crash_test_exe = b.addExecutable(.{
+        .name = "zinux-crash-test",
+        .root_module = crash_test_mod,
+    });
+    crash_test_exe.setLinkerScript(b.path("userland/crash_test/user.ld"));
+    crash_test_exe.root_module.addAssemblyFile(b.path("userland/crash_test/start.S"));
+    b.installArtifact(crash_test_exe);
+
+    const embedded_crash_test_path = b.path("kernel/loader/crash_test_prog.bin");
+    const copy_crash_test_elf = b.addSystemCommand(&.{ "cp", "-f" });
+    copy_crash_test_elf.addFileArg(crash_test_exe.getEmittedBin());
+    copy_crash_test_elf.addFileArg(embedded_crash_test_path);
+    copy_crash_test_elf.step.dependOn(&crash_test_exe.step);
+
     const kernel = b.addExecutable(.{
         .name = "zinux-kernel",
         .root_module = kernel_mod,
@@ -854,6 +877,7 @@ pub fn build(b: *std.Build) void {
     kernel.step.dependOn(&copy_plugin_xfer_test_elf.step);
     kernel.step.dependOn(&copy_vsl_elf.step);
     kernel.step.dependOn(&copy_dirty_test_elf.step);
+    kernel.step.dependOn(&copy_crash_test_elf.step);
     b.installArtifact(kernel);
 
     // --- Host-testit ---
@@ -1164,6 +1188,13 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("snapshot_ckpt_core", snapshot_ckpt_core_host_mod);
+    // 31.5.5 — watchdog-ydin host-testeihin (riippuvuudeton).
+    const watchdog_core_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/watchdog_core.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("watchdog_core", watchdog_core_host_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });

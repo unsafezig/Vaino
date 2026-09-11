@@ -305,6 +305,10 @@ pub fn runAll() void {
     const eeden = @import("eeden.zig");
     eeden.runBootTest();
     betweenSuites();
+    // 31.5.5 — watchdog: aito crash-kaappaus + restart-policy.
+    const watchdog_boot = @import("watchdog.zig");
+    watchdog_boot.runBootTest();
+    betweenSuites();
     // K2-verdict: jokainen suite-epäonnistuminen kulkee log.err:in kautta,
     // joten nollasta poikkeava laskuri tarkoittaa osittaista ajoa. Älä
     // valehtele vihreää — CI lukee tämän rivin eikä hiljaista jatkoa.

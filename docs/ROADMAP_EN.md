@@ -713,7 +713,7 @@ zig build boot-test
 | 31.5.2 | `sys_plugin_checkpoint(pid)` → dump+W=0 guard | `kernel/snapshot.zig` (store+copy+guard), `kernel/syscall/dispatch.zig` (`SYS_plugin_checkpoint=27`), `kernel/syscall/snapshot_syscall.zig` | ✅ PMM-frame copies + per-page W-clear/invlpg + replace semantics + unload-reclaim + `Snapshot checkpoint OK` (copy memcmp + guard set/restore proof, 0 leaks) |
 | 31.5.3 | `sys_plugin_restore(pid)` → copy-back + W-restore (slots/regs deferred, documented) | `kernel/snapshot.zig` (`restorePlugin`), `kernel/syscall/dispatch.zig` (`SYS_plugin_restore=28`), `kernel/syscall/snapshot_syscall.zig` | ✅ frame→live memcmp-verified copy-back + original-W restore (runnable, repeatable) + stale-table/mapping refusals + `Snapshot restore OK` (2× damage/restore + ghost-ESRCH) |
 | 31.5.4 | Incremental snapshot (dirty-page tracking via #PF) | `kernel/snapshot.zig` (`handleWriteFault`, incremental path), `kernel/arch/x86_64/idt.zig` (returnable #PF wrapper), `userland/dirty_test/` (id=2) | ✅ fault-and-continue (#PF→dirty+W=1→iret) + dirty-gated re-copy (same cpid) + genuine ring-3 write-fault end-to-end (`dty` + `Dirty tracking OK`) |
-| 31.5.5 | Watchdog: auto-restore on crash | `kernel/plugin_watchdog.zig` | ⬜ |
+| 31.5.5 | Watchdog: auto-restore on crash | `kernel/watchdog.zig`, `kernel/watchdog_core.zig` | ✅ `Crash captured` + `Watchdog restart OK` boot test |
 
 **Dependency**: Phase 25 (page-table per-process). Hardest single sub-phase in Eeden stretch.
 
@@ -730,6 +730,13 @@ zig build boot-test
 - **Syscall** (`SYS_plugin_restore=28`): same BOOT-or-parent rule as checkpoint; `NoCheckpoint→ESRCH`, rest→`EINVAL`. Fuzz core: 28 registered+dangerous.
 - **Boot test:** damage first page (0xA5) → `sys_plugin_restore` → memcmp + W-runnable proof → damage (0x5A) → restore again (repeatability) → ghost→ESRCH → `Snapshot restore OK`.
 - **Verification:** host still 159/159 (no new pure logic — boot-covered), freestanding clean, 3× QEMU green with `Snapshot restore OK`, 0 `[ERR]`.
+
+**31.5.5 implementation summary (2026-09-11):**
+- **Watchdog core** (`watchdog_core.zig`, pure, host-tested): 4-entry table (pid→cpid+PML4), `eligibleForClaim` (U-bit + checkpoint, P/W not required — crash class is typically not-present read), saturating crash counter. 3 host tests.
+- **Mechanism** (`watchdog.zig`): `watch/unwatch` (PML4-bound, diag row), `claimFault` called from the #PF wrapper after the dirty check — restore + diag + counter, then boot-test context return. Boot test: ghost negatives → load crasher (`userland/crash_test/`, embedded_id=3, not-present read at `0x1234000`) → checkpoint → watch → genuine ring-3 crash captured (`crashCount==1`, diag `degraded`) → unload + reload + re-capture (restart policy) → `Watchdog restart OK`.
+- **Crash-return path** (`idt.zig` wrapper): dirty → `iretq`; watchdog-claim → RSP + callee restore + `ret` (same discipline as `usermodeReturnToKernel`); foreign → legacy log+halt. Reloads RDI/RSI before the second query (first `call` may clobber caller-saved regs).
+- **Root-cause fix found via QEMU repro (infinite `Watchdog captured crash` loop):** `claimFault` ran on the plugin's CR3, whose low half lacks kernel mappings (VGA `0xB8000`) — `log.info`'s VGA write nested-faulted and the boot test continued in the wrong address space. Fix: restore `saved_kernel_cr3` before restore/diag/log (Phase-26 discipline). Temporary RSP/ret-target hex debug removed.
+- **Verification:** host 164/164, freestanding clean, 3× QEMU green with `Crash captured`, `Watchdog restart OK`, `All boot tests OK`, `Full boot OK`, exit 0, 0 `[ERR]`.
 
 **31.5.4 implementation summary (2026-09-10):**
 - **Dirty bit** (`CkptPage.dirty` in the pure core): set by the fault path, cleared by incremental re-copy; `dirtyCount` accessor for tests. Host-tested lifecycle (inject → mark → count → clear).

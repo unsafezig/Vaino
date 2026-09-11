@@ -185,3 +185,8 @@ test {
 test {
     _ = @import("snapshot_store_test.zig");
 }
+
+// Tuo watchdog-ytimen yksikkötestit (31.5.5).
+test {
+    _ = @import("watchdog_test.zig");
+}

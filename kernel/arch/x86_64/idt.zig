@@ -17,6 +17,9 @@ const pit_ticks = @import("../../lib/pit_ticks.zig");
 // Tuo snapshot dirty-seuranta — kirjoitussuojaus-faultit (31.5.4).
 // Kiertoa ei ole: snapshot ei importtaa idt:tä (vmm/paging/pmm/process/log).
 const snapshot = @import("../../snapshot.zig");
+// Tuo watchdog — valvottujen pluginien crash-kaappaus (31.5.5).
+// Kiertoa ei ole: watchdog ei importtaa idt:tä (core/snapshot/process/diag/log).
+const watchdog = @import("../../watchdog.zig");
 
 // IDT-merkintä — 128-bittinen kuvaus yhdestä keskeytys/poikkeusvektorista.
 const IdtEntry = packed struct {
@@ -147,22 +150,55 @@ export fn pageFaultHandle(fault_addr: u64, error_code: u64) callconv(.c) bool {
     return snapshot.handleWriteFault(cr3, fault_addr);
 }
 
+// Watchdog-kysely C-puolella (31.5.5): valvotun pluginin kaatuminen
+// kaapataan (restore + diag + laskuri) — true = käsitelty, wrapper palaa
+// boot-testin kontekstiin (EI haltausta); false = vieras → vanha polku.
+export fn watchdogClaimHandle(fault_addr: u64, error_code: u64) callconv(.c) bool {
+    // Vikatilanteen CR3 (faultaava avaruus — yleensä pluginin PML4).
+    const cr3 = paging.getCr3();
+    // Delegoi watchdogille (CR3-täsmäys + kelpoisuus + kaappaus).
+    return watchdog.claimFault(cr3, fault_addr, error_code);
+}
+
 // Page fault (#14) — naked wrapper lukee CR2 ja virhekoodin pinolta.
-// Käsitelty dirty-fault palaa iretq:lla (kirjoitus yrittää uudelleen,
-// nyt W=1); käsittelemätön jatkaa vanhalla log+halt-polulla.
+// Kolme ulospääsyä: dirty → iretq (kirjoitus yrittää uudelleen);
+// watchdog-crash → boot-testin kontekstiin (RSP restore + callee restore +
+// ret, EI haltausta); vieras → vanha log+halt-poku.
 export fn pageFaultHandler() callconv(.naked) noreturn {
     // Poista keskeytykset heti — estää uudelleenpage faultin handlerissa.
-    // Lue virhekoodi pinosta (CPU pushaa sen ennen handleria).
+    // Lue virhekoodi pinosta (CPU pushaa sen ennen handleria) 32-BITTISENÄ:
+    // ylemmät 32 bittiä ovat määrittelemättömät (QEMU jättää roskaa —
+    // K5-jahdissa mitattu 0xFFFFFFFB), joten mov %esi nollaa ne. C-koodi
+    // saa aina puhtaan u64:n eikä bittitesti lue haamubittejä.
     // Lue CR2 — page fault -virtuaaliosoite.
-    // Kutsu esitarkistusta: RDI=fault_addr, RSI=error_code (SysV ABI).
-    // Paluu al=1 → pudota virhekoodi pinolta + iretq; al=0 → vanha polku.
+    // Kutsu esitarkistuksia: RDI=fault_addr, RSI=error_code (SysV ABI).
+    // pageFaultHandle: al=1 → dirty-iret; al=0 → watchdog-kysely.
+    // watchdogClaimHandle: al=1 → crash-paluu; al=0 → vanha polku.
+    // HUOM: ensimmäinen call saa sotkea RDI/RSI:n (caller-saved), joten
+    // lataa molemmat uudelleen ennen toista kyselyä — muuten watchdog
+    // lukisi roskan eikä kaatumisen virhekoodia (U-bitti).
     asm volatile (
         \\cli
-        \\mov (%%rsp), %%rsi
+        \\mov (%%rsp), %%esi
         \\mov %%cr2, %%rdi
         \\call pageFaultHandle
         \\test %%al, %%al
+        \\jnz .pf_dirty_iret
+        \\mov (%%rsp), %%esi
+        \\mov %%cr2, %%rdi
+        \\call watchdogClaimHandle
+        \\test %%al, %%al
         \\jz .pf_unhandled
+        \\add $8, %%rsp
+        \\mov usermode_saved_callee+0(%%rip), %%rbx
+        \\mov usermode_saved_callee+8(%%rip), %%rbp
+        \\mov usermode_saved_callee+16(%%rip), %%r12
+        \\mov usermode_saved_callee+24(%%rip), %%r13
+        \\mov usermode_saved_callee+32(%%rip), %%r14
+        \\mov usermode_saved_callee+40(%%rip), %%r15
+        \\mov usermode_saved_kernel_rsp(%%rip), %%rsp
+        \\ret
+        \\.pf_dirty_iret:
         \\add $8, %%rsp
         \\iretq
         \\.pf_unhandled:

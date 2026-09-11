@@ -35,6 +35,8 @@ const plugin_elf = @embedFile("../loader/plugin_prog.bin");
 const vsl_elf = @embedFile("../loader/vsl_prog.bin");
 // Upotettu dirty-test-ELF — build.zig kopioi dirty-bin:n tähän (31.5.4).
 const dirty_elf = @embedFile("../loader/dirty_test_prog.bin");
+// Upotettu crash-test-ELF — build.zig kopioi crash-bin:n tähän (31.5.5).
+const crash_elf = @embedFile("../loader/crash_test_prog.bin");
 
 // Plugin-ELF-tunniste sys_plugin_load a1:lle (vaihe 30, ensimmäinen kuva).
 pub const PLUGIN_EMBEDDED_ID: u64 = 0;
@@ -42,12 +44,16 @@ pub const PLUGIN_EMBEDDED_ID: u64 = 0;
 pub const VSL_EMBEDDED_ID: u64 = 1;
 // Dirty-test-ELF-tunniste sys_plugin_load a1:lle (31.5.4, kolmas kuva).
 pub const DIRTY_EMBEDDED_ID: u64 = 2;
+// Crash-test-ELF-tunniste sys_plugin_load a1:lle (31.5.5, neljäs kuva).
+pub const CRASH_EMBEDDED_ID: u64 = 3;
 // Plugin-pinon heap-slot — vapaa väli (112-115 spawn, 114 cross-ipc).
 pub const PLUGIN_STACK_SLOT: u64 = 116;
 // VSL-plugin-pinon heap-slot — seuraava vapaa (117 xfer-capboot).
 pub const VSL_STACK_SLOT: u64 = 118;
 // Dirty-test-pinon heap-slot — seuraava vapaa (119).
 pub const DIRTY_STACK_SLOT: u64 = 119;
+// Crash-test-pinon heap-slot — seuraava vapaa (120).
+pub const CRASH_STACK_SLOT: u64 = 120;
 // Montako pluginia rekisteriin mahtuu (pieni, mitattava raja).
 // Montako pluginia rekisteriin mahtuu (pieni, mitattava raja).
 pub const MAX_PLUGINS: usize = 8;
@@ -88,10 +94,10 @@ fn ensureInit() void {
     registry_init = true;
 }
 
-// Onko embedded-tunniste kelvollinen plugin-ELF (0=plugin, 1=VSL, 2=dirty).
+// Onko embedded-tunniste kelvollinen plugin-ELF (0=plugin, 1=VSL, 2=dirty, 3=crash).
 pub fn isValidEmbeddedId(id: u64) bool {
-    // Kolme tuettua plugin-binääriä (vaihe 30 + VSL-0 + 31.5.4).
-    return id == PLUGIN_EMBEDDED_ID or id == VSL_EMBEDDED_ID or id == DIRTY_EMBEDDED_ID;
+    // Neljä tuettua plugin-binääriä (vaihe 30 + VSL-0 + 31.5.4 + 31.5.5).
+    return id == PLUGIN_EMBEDDED_ID or id == VSL_EMBEDDED_ID or id == DIRTY_EMBEDDED_ID or id == CRASH_EMBEDDED_ID;
 }
 
 // Upotetun plugin-ELF:n tavut swap-latausta varten (Vaihe 33 paikallaanvaihto).
@@ -110,6 +116,11 @@ pub fn vslElf() []const u8 {
 // Upotetun dirty-test-ELF:n tavut (31.5.4).
 pub fn dirtyElf() []const u8 {
     return dirty_elf;
+}
+
+// Upotetun crash-test-ELF:n tavut (31.5.5).
+pub fn crashElf() []const u8 {
+    return crash_elf;
 }
 
 // Etsi pluginin rekisteri-indeksi pid:llä — null jos ei ladattu plugin.
@@ -206,20 +217,24 @@ pub fn unregisterPlugin(pid: u64) bool {
 
 // Lataa plugin-ELF uudelle pid:lle omaan sivutauluun — palauttaa pid tai null.
 pub fn loadPlugin(embedded_id: u64) ?u64 {
-    // Vain tunnetut plugin-ELF:t kelpaavat (0=plugin, 1=VSL, 2=dirty).
+    // Vain tunnetut plugin-ELF:t kelpaavat (0=plugin, 1=VSL, 2=dirty, 3=crash).
     if (!isValidEmbeddedId(embedded_id)) return null;
     // Valitse ladattava kuva + pinon slotti tunnisteen mukaan.
     const image: []const u8 = if (embedded_id == VSL_EMBEDDED_ID)
         vsl_elf
     else if (embedded_id == DIRTY_EMBEDDED_ID)
         dirty_elf
+    else if (embedded_id == CRASH_EMBEDDED_ID)
+        crash_elf
     else
         plugin_elf;
-    // Pinon heap-slot kuvan mukaan (116 plugin, 118 VSL, 119 dirty).
+    // Pinon heap-slot kuvan mukaan (116 plugin, 118 VSL, 119 dirty, 120 crash).
     const stack_slot: u64 = if (embedded_id == VSL_EMBEDDED_ID)
         VSL_STACK_SLOT
     else if (embedded_id == DIRTY_EMBEDDED_ID)
         DIRTY_STACK_SLOT
+    else if (embedded_id == CRASH_EMBEDDED_ID)
+        CRASH_STACK_SLOT
     else
         PLUGIN_STACK_SLOT;
     // Allokoi seuraava vapaa pid prosessitaulukosta.
