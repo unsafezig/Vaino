@@ -50,6 +50,8 @@ const ns_map = @import("../plugin/ns_map.zig");
 const snapshot = @import("../snapshot.zig");
 // Tuo VFS-ydin — open/read/close + errnoOf/isOpen ring-3-tiedostoille (VSL-4A).
 const vfs = @import("../fs/vfs_core.zig");
+// Tuo Linux-trap-ydin — Linux-numerot → Zinux-numerot (VSL-4B, puhdas taulu).
+const trap_core = @import("linux_trap_core.zig");
 
 // Syscall-käsittelijän funktiotyyppi (6 argumenttia, i64 paluu).
 const SyscallFn = *const fn (u64, u64, u64, u64, u64, u64) i64;
@@ -201,6 +203,90 @@ fn sysVfsClose(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
     vfs.close(handle);
     // Onnistui.
     return 0;
+}
+
+// sys_plugin_trap — aseta/poista Linux-persoonallisuus pidille (VSL-4B).
+// ABI: RAX=32, RDI=pid, RSI=enable (0=pois, 1=päälle).
+// Vain lataaja-parent tai boot (sama sääntö kuin unload — ei vieraiden
+// persoonallisuuden vaihtoa). Paluu: 0, ESRCH (haamu), EPERM tai EINVAL.
+// Huom: vaikuttaa vain ring-3-trap-polkuun; invoke ei käännä koskaan.
+fn sysPluginTrap(a1: u64, a2: u64, _: u64, _: u64, _: u64, _: u64) i64 {
+    // Kohdeprosessi.
+    const pid = a1;
+    // Prosessi oltava olemassa.
+    if (!process.exists(pid)) return abi.ESRCH;
+    // Kutsuja + lataaja-parent unload-säännöllä.
+    const caller = process.currentPid();
+    const owner = process.parentPid(pid) orelse process.BOOT_PID;
+    // Vain lataaja tai boot saa vaihtaa persoonallisuutta.
+    if (caller != owner and caller != process.BOOT_PID) return abi.EPERM;
+    // Vain 0/1 kelpaa (ei hiljaista totuusarvo-tulkintaa).
+    if (a2 != 0 and a2 != 1) return abi.EINVAL;
+    // Aseta/poista lippu (poisto mitätöi kehyskuvan).
+    if (!process.setLinuxTrapped(pid, a2 == 1)) return abi.ESRCH;
+    // Onnistui.
+    return 0;
+}
+
+// Emuloi Linux uname trapped-pluginille: kirjoita UNAME_BYTES user-puskuriin.
+// Paluu: tavut (RDX-rajattu) — ei kernel-kyselyä, VSL vastaa itse (VSL-1-kaava).
+fn trapUname(user: [*]u8, user_len: u64) i64 {
+    // Kopioitava määrä (tyhjä puskuri → 0, ei virhettä).
+    const n: usize = @min(@as(usize, @truncate(user_len)), trap_core.UNAME_BYTES.len);
+    // SMAP: salli user-sivujen kirjoitus kernelistä.
+    user_access.stac();
+    // Kopioi tavu kerrallaan.
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        // Yksi tavu emuloidusta vastauksesta.
+        user[i] = trap_core.UNAME_BYTES[i];
+    }
+    // Palauta SMAP-suojaus.
+    user_access.clac();
+    // Palauta tavumäärä.
+    return @intCast(n);
+}
+
+// Trap-dispatch trapped-pidin ring-3-syscallille (VSL-4B).
+// Kaappaa raakakehyksen (Linux-numerot) VslState-regseihin, kääntää numeron,
+// delegoi tai emuloi. Tuntematon → -ENOSYS takaisin user-tilaan (ei haltia).
+fn trapDispatch(frame: *SyscallFrame) i64 {
+    // Nykyinen (trapattu) pid.
+    const pid = process.currentPid();
+    // Kaappaa raakakehys esikäännös-numeroin ([rax..rflags], +6 nollaa).
+    var regs = [_]u64{0} ** 16;
+    regs[trap_core.REG_RAX] = frame.num;
+    regs[trap_core.REG_RDI] = frame.arg1;
+    regs[trap_core.REG_RSI] = frame.arg2;
+    regs[trap_core.REG_RDX] = frame.arg3;
+    regs[trap_core.REG_R10] = frame.arg4;
+    regs[trap_core.REG_R8] = frame.arg5;
+    regs[trap_core.REG_R9] = frame.arg6;
+    // RCX syscallin jälkeen = paluu-RIP (entry tallentaa sen user_rip:iin);
+    // erillistä vika-RIP:iä kehyksessä ei ole, joten RIP kopioi saman
+    // jatkumispisteen (rehellinen raja, dokumentoitu trap-coressa).
+    regs[trap_core.REG_RCX] = frame.user_rip;
+    regs[trap_core.REG_RIP] = frame.user_rip;
+    regs[trap_core.REG_RFLAGS] = frame.user_rflags;
+    // Tallenna kuva (best-effort — pid on olemassa tässä).
+    _ = process.recordTrapRegs(pid, regs);
+    // Käännä Linux-numero toiminnoksi.
+    const act = trap_core.translate(frame.num);
+    return switch (act) {
+        // Suora Zinux-numero — delegoi kehyksen argumenteilla.
+        .zinux => |z| {
+            // Taulukon ulkopuoli ei pitäisi tapahtua (taulu tuntee kohteet).
+            if (z >= handlers.len) return abi.ENOSYS;
+            // Puuttuva handler → ENOSYS (ei hiljaista läpimenoa).
+            const handler = handlers[@intCast(z)] orelse return abi.ENOSYS;
+            // Argumentit kulkevat sellaisenaan (sama konventio).
+            return handler(frame.arg1, frame.arg2, frame.arg3, frame.arg4, frame.arg5, frame.arg6);
+        },
+        // Sisäinen uname — emuloi user-puskuriin (RDI=buf, RDX=len).
+        .internal_uname => trapUname(@ptrFromInt(frame.arg1), frame.arg3),
+        // Ei vastinetta (signaalit/fork/tuntemattomat) → ENOSYS user-tilaan.
+        .unsupported => abi.ENOSYS,
+    };
 }
 
 // sys_exit — merkitse prosessi zombieksi ja palaa kerneliin ring 3:sta (Vaihe 24).
@@ -843,9 +929,9 @@ fn sysPluginRestore(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
 }
 
 // Dispatch-taulukko — indeksi = syscall-numero (max 31).
-const handlers: [32]?SyscallFn = blk: {
+const handlers: [33]?SyscallFn = blk: {
     // Alusta kaikki merkinnät tyhjiksi.
-    var table: [32]?SyscallFn = .{null} ** 32;
+    var table: [33]?SyscallFn = .{null} ** 33;
     // Rekisteröi sys_write.
     table[@intCast(abi.SYS_write)] = sysWrite;
     // Rekisteröi sys_read.
@@ -903,10 +989,12 @@ const handlers: [32]?SyscallFn = blk: {
     // Rekisteröi sys_plugin_restore (copy-back + W-palautus, 31.5.3).
     table[@intCast(abi.SYS_plugin_restore)] = sysPluginRestore;
     // Rekisteröi VFS-tiedostosyscallit (VSL-4A: open/read/close ring-3:ssa).
-    // Taulukko ([32]) on nyt täynnä — kasvatus vain mitatulla tarpeella.
     table[@intCast(abi.SYS_vfs_open)] = sysVfsOpen;
     table[@intCast(abi.SYS_vfs_read)] = sysVfsRead;
     table[@intCast(abi.SYS_vfs_close)] = sysVfsClose;
+    // Rekisteröi Linux-persoonallisuus (VSL-4B: trap-enable).
+    // Taulukko kasvoi 32→33 mitatulla tarpeella (VSL_SPEC §9 -poikkeus).
+    table[@intCast(abi.SYS_plugin_trap)] = sysPluginTrap;
     // Palauta valmis taulukko.
     break :blk table;
 };
@@ -924,6 +1012,13 @@ pub fn linkAnchor() void {
 pub export fn syscallDispatchFromFrame(frame: *SyscallFrame) i64 {
     // Hae syscall-numero kehyksestä.
     const num = frame.num;
+    // Trap-persoonallisuus ensin: trapped-pidin ring-3-numerot ovat
+    // Linux-numeroita — käännä ennen taulukkoa (VSL-4B). invoke
+    // (kernel-konteksti) ei kulje tätä, joten valvontakoodi ei käänny.
+    if (process.isLinuxTrapped(process.currentPid())) {
+        // Kaappaa + käännä + delegoi/emuloi (tuntematon → ENOSYS useriin).
+        return trapDispatch(frame);
+    }
     // Numero taulukon ulkopuolella → ENOSYS.
     if (num >= handlers.len) return abi.ENOSYS;
     // Hae handler tai null.

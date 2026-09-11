@@ -66,8 +66,9 @@ fn fuzzOne(seed: *u64, enosys_hits: *usize) bool {
 
 // Tarkista kaikki taulukon ulkopuoliset numerot palauttavat ENOSYS.
 fn fuzzOutOfRange() bool {
-    // Testattavat ulko-rajat.
-    const nums = [_]u64{ 32, 64, 100, 0xFFFF, 0xFFFFFFFF };
+    // Testattavat ulko-rajat (33 = ensimmäinen tyhjä slotti 33-kokoisessa
+    // taulukossa — VSL-4B kasvatti 32:sta; 32 on nyt sys_plugin_trap).
+    const nums = [_]u64{ 33, 64, 100, 0xFFFF, 0xFFFFFFFF };
     // Käy jokainen.
     for (nums) |num| {
         // invoke(0-arg) pitää palauttaa ENOSYS.

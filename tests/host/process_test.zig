@@ -105,3 +105,41 @@ test "pidAt enumerates live ordinals across holes" {
     // Alueen ulkopuolella → null.
     try std.testing.expect(proc.pidAt(3) == null);
 }
+
+test "linux trap flag and regs lifecycle (VSL-4B)" {
+    // Puhdas tila.
+    proc.initCore();
+    try std.testing.expect(proc.allocProcess(2));
+    // Oletus: ei trap-tilaa, ei validia kuvaa.
+    try std.testing.expect(!proc.isLinuxTrapped(2));
+    try std.testing.expect(!proc.trapRegsValid(2));
+    // Kopiointi ilman kuvaa epäonnistuu.
+    var out: [16]u64 = undefined;
+    try std.testing.expect(!proc.trapRegs(2, &out));
+    // Haamu-pid hylätään joka suunnassa.
+    try std.testing.expect(!proc.setLinuxTrapped(99, true));
+    try std.testing.expect(!proc.isLinuxTrapped(99));
+    try std.testing.expect(!proc.recordTrapRegs(99, [_]u64{0} ** 16));
+    // Aseta trap + tallenna kehys (Linux write -numerot).
+    try std.testing.expect(proc.setLinuxTrapped(2, true));
+    try std.testing.expect(proc.isLinuxTrapped(2));
+    var regs = [_]u64{0} ** 16;
+    regs[0] = 1;
+    regs[1] = 1;
+    try std.testing.expect(proc.recordTrapRegs(2, regs));
+    try std.testing.expect(proc.trapRegsValid(2));
+    try std.testing.expect(proc.trapRegs(2, &out));
+    try std.testing.expectEqual(@as(u64, 1), out[0]);
+    try std.testing.expectEqual(@as(u64, 1), out[1]);
+    // Poisto mitätöi kuvan.
+    try std.testing.expect(proc.setLinuxTrapped(2, false));
+    try std.testing.expect(!proc.isLinuxTrapped(2));
+    try std.testing.expect(!proc.trapRegsValid(2));
+    // Uudelleenasetus + vapautus ei periydy (stale-trap esto).
+    try std.testing.expect(proc.setLinuxTrapped(2, true));
+    try std.testing.expect(proc.recordTrapRegs(2, regs));
+    try std.testing.expect(proc.freePid(2));
+    try std.testing.expect(proc.allocProcess(2));
+    try std.testing.expect(!proc.isLinuxTrapped(2));
+    try std.testing.expect(!proc.trapRegsValid(2));
+}

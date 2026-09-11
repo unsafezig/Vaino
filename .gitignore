@@ -23,6 +23,8 @@ kernel/loader/spawn_child_a_prog.bin
 kernel/loader/spawn_child_b_prog.bin
 kernel/loader/spawn_child_exit_prog.bin
 kernel/loader/cross_ipc_test_prog.bin
+kernel/loader/vsl_file_test_prog.bin
+kernel/loader/linux_hello_prog.bin
 
 # Editorit
 .idea/

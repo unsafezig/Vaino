@@ -20,6 +20,11 @@ const snapshot = @import("../../snapshot.zig");
 // Tuo watchdog — valvottujen pluginien crash-kaappaus (31.5.5).
 // Kiertoa ei ole: watchdog ei importtaa idt:tä (core/snapshot/process/diag/log).
 const watchdog = @import("../../watchdog.zig");
+// Tallennettu kernel-CR3 (usermode.zig export — luetaan, ei kirjoiteta).
+// Fataali fault-polku palaa tällä kernel-kartoituksiin ennen lokitusta:
+// plugin-CR3:n alapuolisko ei kata VGA:ta (0xB8000), joten lokitus
+// faultaisi sisäkkäin loputtomiin headereihin ilman palautusta (VSL-4B-jahti).
+extern var saved_kernel_cr3: u64;
 
 // IDT-merkintä — 128-bittinen kuvaus yhdestä keskeytys/poikkeusvektorista.
 const IdtEntry = packed struct {
@@ -108,6 +113,11 @@ fn writeFaultErrorBits(code: u64) void {
 
 // Page fault -käsittelijä C-puolella — logittaa CR2 + virhekoodin ja pysäyttää CPU:n.
 export fn pageFaultHandlerC(fault_addr: u64, error_code: u64) callconv(.c) noreturn {
+    // Takaisin kernel-avaruuteen ennen lokitusta (vika saapuu faultaavan
+    // pluginin CR3:lla; VGA-kirjoitus faultaisi sisäkkäin ilman palautusta).
+    // Nolla = ei ring-3-siirtymää tehty (ei pitäisi tapahtua U-faultissa).
+    const kcr3: u64 = saved_kernel_cr3;
+    if (kcr3 != 0) paging.setCr3(kcr3);
     // Tulosta staattinen virheotsikko serialiin.
     log.err("Page fault at");
     // Tulosta virheen virtuaaliosoite (CR2) heksadesimaalimuodossa.

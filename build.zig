@@ -892,6 +892,17 @@ pub fn build(b: *std.Build) void {
     copy_vsl_file_test_elf.addFileArg(embedded_vsl_file_test_path);
     copy_vsl_file_test_elf.step.dependOn(&vsl_file_test_exe.step);
 
+    // --- Linux-hello-ELF (VSL-4B) — generaattori ajaa ennen kerneliä ---
+    const linux_hello_gen_exe = b.addExecutable(.{
+        .name = "linux-hello-gen",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/linux_hello.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const run_linux_hello_gen = b.addRunArtifact(linux_hello_gen_exe);
+
     const kernel = b.addExecutable(.{
         .name = "zinux-kernel",
         .root_module = kernel_mod,
@@ -931,6 +942,7 @@ pub fn build(b: *std.Build) void {
     kernel.step.dependOn(&copy_dirty_test_elf.step);
     kernel.step.dependOn(&copy_crash_test_elf.step);
     kernel.step.dependOn(&copy_vsl_file_test_elf.step);
+    kernel.step.dependOn(&run_linux_hello_gen.step);
     b.installArtifact(kernel);
 
     // --- Host-testit ---
@@ -1257,6 +1269,20 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("vsl_state", vsl_state_host_mod);
+    // VSL-4B — Linux-trap-ydin host-testeihin (riippuvuudeton).
+    const linux_trap_core_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/syscall/linux_trap_core.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("linux_trap_core", linux_trap_core_host_mod);
+    // VSL-4B — hello-generaattori host-testeihin (työkalu moduulina).
+    const linux_hello_tool_host_mod = b.createModule(.{
+        .root_source_file = b.path("tools/linux_hello.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("linux_hello_tool", linux_hello_tool_host_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });

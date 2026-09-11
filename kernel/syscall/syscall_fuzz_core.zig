@@ -4,8 +4,8 @@
 //! **Riippuvuudet**: ei
 //! **Käytetään**: `syscall_fuzz.zig`, host-testit
 
-// Dispatch-taulukon koko — sama kuin dispatch.zig handlers.len.
-pub const TABLE_SIZE: usize = 32;
+// Dispatch-taulukon koko — sama kuin dispatch.zig handlers.len (VSL-4B: 33).
+pub const TABLE_SIZE: usize = 33;
 // ENOSYS paluuarvo (Linux-yhteensopiva negatiivinen).
 pub const ENOSYS: i64 = -38;
 // EBADF virhe — huono fd sys_write/sys_read -testeissä.
@@ -81,6 +81,8 @@ pub fn isRegistered(num: u64) bool {
         30 => true,
         // sys_vfs_close (VSL-4A) — mutatoi kahvataulukkoa fuzzissa.
         31 => true,
+        // sys_plugin_trap (VSL-4B) — mutatoi persoonallisuutta fuzzissa.
+        32 => true,
         // Kaikki muut slotit tyhjät tai taulukon ulkopuolella.
         else => false,
     };
@@ -148,6 +150,8 @@ pub fn isDangerous(num: u64) bool {
         30 => true,
         // sys_vfs_close — mutatoi kahvataulukkoa fuzzissa.
         31 => true,
+        // sys_plugin_trap — mutatoi persoonallisuutta fuzzissa.
+        32 => true,
         // Muut numerot turvallisia tai ENOSYS.
         else => false,
     };

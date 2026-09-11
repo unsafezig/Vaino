@@ -195,3 +195,13 @@ test {
 test {
     _ = @import("vsl_state_test.zig");
 }
+
+// Tuo Linux-trap-ytimen yksikkötestit (VSL-4B).
+test {
+    _ = @import("linux_trap_test.zig");
+}
+
+// Tuo Linux-hello-generaattorin yksikkötestit (VSL-4B).
+test {
+    _ = @import("linux_hello_test.zig");
+}

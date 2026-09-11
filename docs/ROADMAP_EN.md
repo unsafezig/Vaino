@@ -1127,6 +1127,42 @@ zig build boot-test
 
 ---
 
+#### Phase 43 — VSL-4B: Trap-and-Emulate Unmodified Linux ELFs ✅
+
+> **Goal**: A static Linux-ABI binary (no Zinux shim, no relink) prints
+> via UART through per-plugin RAX translation; unknown Linux numbers
+> return -ENOSYS to user mode (no halt).
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| 43.1 | Linux personality (`SYS_plugin_trap=32`, table 32→33) + trap_regs | `process_core.zig`, `dispatch.zig` | ✅ ghost/EPERM/EINVAL negatives + `VSL trap capture OK` |
+| 43.2 | Pure translation table + uname bytes | `linux_trap_core.zig` | ✅ translate vectors + linux_abi agreement + host tests |
+| 43.3 | Deterministic hello-ELF generator (no jumps, patched LEAs) | `tools/linux_hello.zig` | ✅ layout + LEA-resolve host tests, build-time embed |
+| 43.4 | Ring-3 trap test (hello/uname/enosys/exit) + describe-regs | `vsl_trap_syscall.zig` | ✅ `VSL trap OK` |
+
+**Dependency**: Phase 39 (ABI table), 31.5 (regs capture target = `VslState.regs`).
+
+**Test**:
+```bash
+zig build test
+# trap vectors + agreement + hello layout + process lifecycle OK (178 passed)
+zig build boot-test
+# Expected serial: hello linux, vsl-uname: VSL 0.1, vsl-enosys OK,
+# VSL trap capture OK, VSL trap state OK, VSL trap OK, All boot tests OK
+```
+
+**Implementation summary:**
+- **Personality** (`process_core`: `linux_trapped` + `trap_regs[16]` + valid flag, 3 init sites + `freePid` stale-clear, host lifecycle test): `SYS_plugin_trap(pid, 0/1)` with unload-caller rule (BOOT/parent, else EPERM), ghost→ESRCH, value>1→EINVAL. Affects ring-3 `syscallDispatchFromFrame` only — `invoke` never translates (trap branch before table lookup).
+- **Translation** (`linux_trap_core.zig`, pure, host-tested + `linux_abi` agreement test): read→11, write→1, close→31, mmap/brk→23, getpid→3, exit→2, uname→internal, openat→29, else unsupported. Args pass through untouched (identical x86_64 convention, R10 4th).
+- **Generator** (`tools/linux_hello.zig`, deterministic, no timestamps): ET_EXEC @0x400000, single R-X segment, entry=base+120 (headers mapped not executed — standard linker shape), uname→3 writes→invalid(9999)/cmov-select→exit(code). Build-time `addRunArtifact` → `kernel/loader/linux_hello_prog.bin` (gitignored). Host tests pin magic/entry/segment/code + independently re-resolve all 5 LEA disp32s.
+- **Trap path** (`dispatch.trapDispatch`): record raw frame (Linux numbers, `[rax..rflags]`) → translate → dispatch / `trapUname` (RDI=buf — first version used RSI/garbage, caught by QEMU: ubuf printed zeros) / ENOSYS. Fuzz core: 32 registered+dangerous, `TABLE_SIZE` 33, out-of-range probe moved 32→33.
+- **Boot test** (`vsl_trap_syscall.zig`, loader id 5 `@0x400000`/slot 122): ghost/EPERM/EINVAL negatives → enable (idempotent) → ring-3 run → zombie exit(0) proves OK-branch → regs==exit frame in Linux numbers → checkpoint + shared `describeCheckpoint` fills `VslState.regs` (first fill per VSL_SPEC §11) → entry-page + 1-cap asserts → disable (flag+image cleared) → unload → `VSL trap OK`.
+- **Debug finds (both fixed, QEMU-proven):** (1) generator `e_entry` pointed at ELF headers — CPU executed header bytes, wild `add [rax],al` faulted at 0x2F6000 (GDB: fault RIP 0x400047 decoded zeros; dump showed `7F E L F` mapped at 0x400000). Fix: entry=base+CODE_OFF. (2) Any unhandled plugin-CR3 fault recursed forever on VGA (`b80a0`, headers without hex — same class as 31.5.5): `pageFaultHandlerC` now restores kernel CR3 first (fail-fast single header + halt instead of timeout).
+- **Key design decision**: no per-pid trapped-fd table smuggled in — `read(fd≥3)` currently routes to console-read; the trapped-fd table is named 4B.x follow-up. Signals/fork stay ENOSYS-ported.
+- **Verification:** host 178/178, freestanding clean, 3× QEMU green with `hello linux`, `vsl-uname: VSL 0.1`, `vsl-enosys OK`, `VSL trap capture OK`, `VSL trap state OK`, `VSL trap OK`, `All boot tests OK`, `Full boot OK`, exit 0, 0 `[ERR]`.
+
+---
+
 ### Known Issues (found by first local QEMU run, 2026-09-10)
 
 > Until 2026-09-10 no full `boot-test` had ever run locally (no QEMU/xorriso
@@ -1259,7 +1295,7 @@ indistinguishable from a green boot in CI.
 ✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
 ✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) + K5 (IDT loop) + K6 (TSS packing) + 31.5.4 (dirty tracking) + 31.5.5 (watchdog: kernel-CR3 restore in claim path) + Phase 41 (VSL-3 state descriptor + swap continuity + vsl-shell compose) — 3× green QEMU, 0 [ERR]
    ↓
-⬜ NEXT → VSL-4B (trap-and-emulate unmodified Linux ELFs) — research phase, no kernel Linux knowledge (core stays clean); 4A done (fd-syscalls green)
+⬜ NEXT → VSL-4B.x (trapped-fd table: read(fd≥3) routing) + signals/fork scoping — research follow-ups; 4A+4B green
 ```
 
 **Parallelizable**: VSL-2 file work (fd-table, shell demo) can proceed alongside
@@ -1306,6 +1342,7 @@ graph TD
     V39 --> V40[Phase 40: VSL-2 mini-shell]
     V40 --> V41[Phase 41: VSL-3 snapshot-ready]
     V41 --> V42[Phase 42: VSL-4A fd-syscalls]
+    V42 --> V43[Phase 43: VSL-4B trap-and-emulate]
 ```
 
 ---

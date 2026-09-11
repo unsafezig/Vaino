@@ -153,13 +153,15 @@ Boot-todiste: ENOENT/EINVAL/EBADF-negatiivit + invoke open/read/close +
 ring-3 open→read→EOF→close→tuplasulku-EBADF. Ei uusia cap-tyyppejä.
 Kahvat globaalissa taulukossa (ei per-pid-fd:tä — yhden pluginin koe).
 
-**4B-rajaus (tutkimusvaihe, ei lupausta):** edellyttää per-plugin
-syscall-pysäytystä (IDT/`syscall_entry`-haara + Linux-numeroiden käännös
-`linux_abi`-taululla) sekä VSL-4-rekisterikaappausta (`VslState.regs`
-täyttyy ensi kertaa). Avoin kysymys: signaalit + `fork`-semantiikka rajataan
-ulos ensimmäisestä kokeesta (ENOSYS + dokumentoitu syy). Onnistumiskriteeri
-etukäteen: staattisesti käännetty `hello`-Linux-ELF tulostaa UART:iin ilman
-shim-uudelleenlinkitystä; epäonnistuminenkin kirjataan (negative result).
+**4B-rajaus (toteutettu 2026-09-11, ensimmäinen koe) ✅:**
+`SYS_plugin_trap(32)`-persoonallisuus + `linux_trap_core`-käännös +
+generaattori-ELF (`tools/linux_hello.zig`, ei shimmiä) +
+uname-emulaatio + trap-regs-kuva. Boot: `hello linux` (trapattu write) +
+`vsl-uname: VSL 0.1` (sisäinen) + `vsl-enosys OK` (tuntematon → ENOSYS,
+cmov-valinta) + exit(0) → regs-kuva Linux-numeroin → describe-täyttö →
+disable + purku. Signaalit/fork yhä ENOSYS-portissa (kirjattu raja, ei
+lupausta). Tiedosto-fd:t trapissa vaativat 4B.x-taulun (read(≥3) → nyt
+konsoli-read — dokumentoitu, ei arvailua).
 
 **Yhteiset ei-tavoitteet (voimassa 4A+4B):** ei täyttä POSIXia/busyboxia, ei
 verkkoa, ei virtio-writeä, ei VT-x/EPT:tä (vaihtoehto B yhä hylätty —

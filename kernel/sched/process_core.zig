@@ -44,6 +44,14 @@ pub const Process = struct {
     exit_code: u32,
     // Per-process sivutaulun fyysinen PML4-osoite — Vaihe 25 (0 = ei erillistä).
     page_table: u64,
+    // Linux-persoonallisuus (VSL-4B trap-and-emulate): ring-3-syscallit
+    // käännetään Linux-numeroista (oletus false = Zinux-numerot sellaisenaan).
+    linux_trapped: bool,
+    // Viimeisimmän trap-kutsun raakakehys Linux-numeroin (esikäännös) —
+    // VslState.regs-täyttöön ([rax,rdi,rsi,rdx,r10,r8,r9,rcx,rip,rflags,+6]).
+    trap_regs: [16]u64,
+    // Onko trap_regs validi (false kunnes ensimmäinen trap-kutsu).
+    trap_regs_valid: bool,
 };
 // Ladatun prosessin suoritustiedot — runProcess/spawn.
 pub const LoadedProcess = struct {
@@ -88,6 +96,11 @@ pub fn initCore() void {
         p.exit_code = 0;
         // Ei erillistä sivutaulua nollauksen aikana.
         p.page_table = 0;
+        // Ei Linux-persoonallisuutta nollauksen aikana.
+        p.linux_trapped = false;
+        // Ei trap-kehystä ennen ensimmäistä trap-kutsua.
+        p.trap_regs = [_]u64{0} ** 16;
+        p.trap_regs_valid = false;
     }
     // Ei rekisteröityjä prosesseja.
     used_count = 0;
@@ -135,6 +148,9 @@ pub fn allocProcess(pid: u64) bool {
             .parent_pid = NO_PARENT,
             .exit_code = 0,
             .page_table = 0,
+            .linux_trapped = false,
+            .trap_regs = [_]u64{0} ** 16,
+            .trap_regs_valid = false,
         };
         // Yksi prosessi rekisteröity.
         used_count = 1;
@@ -173,6 +189,9 @@ pub fn allocProcess(pid: u64) bool {
         .parent_pid = NO_PARENT,
         .exit_code = 0,
         .page_table = 0,
+        .linux_trapped = false,
+        .trap_regs = [_]u64{0} ** 16,
+        .trap_regs_valid = false,
     };
     // Kasvata lukumäärää.
     used_count += 1;
@@ -338,6 +357,60 @@ pub fn setPageTable(pid: u64, phys: u64) bool {
     return true;
 }
 
+// Aseta/poista Linux-persoonallisuus (VSL-4B trap-and-emulate).
+// Vaikuttaa vain ring-3-trap-polkuun (dispatch-from-frame); invoke
+// (kernel-konteksti) ei käännä koskaan.
+pub fn setLinuxTrapped(pid: u64, on: bool) bool {
+    // Hae prosessin indeksi.
+    const idx = findIndex(pid) orelse return false;
+    // Tallenna persoonallisuus.
+    processes[idx].linux_trapped = on;
+    // Poisto mitätöi myös kehyskuvan (stale-regs esto).
+    if (!on) processes[idx].trap_regs_valid = false;
+    // Onnistui.
+    return true;
+}
+
+// Onko prosessi Linux-trap-tilassa — false jos prosessia ei ole.
+pub fn isLinuxTrapped(pid: u64) bool {
+    // Hae prosessin indeksi.
+    const idx = findIndex(pid) orelse return false;
+    // Palauta lippu.
+    return processes[idx].linux_trapped;
+}
+
+// Tallenna trap-kutsun raakakehys (Linux-numerot, esikäännös).
+pub fn recordTrapRegs(pid: u64, regs: [16]u64) bool {
+    // Hae prosessin indeksi.
+    const idx = findIndex(pid) orelse return false;
+    // Kopioi kehys.
+    processes[idx].trap_regs = regs;
+    // Merkitse validiksi.
+    processes[idx].trap_regs_valid = true;
+    // Onnistui.
+    return true;
+}
+
+// Onko trap-kehyskuva validi (false ennen ensimmäistä trap-kutsua).
+pub fn trapRegsValid(pid: u64) bool {
+    // Hae prosessin indeksi.
+    const idx = findIndex(pid) orelse return false;
+    // Palauta validius.
+    return processes[idx].trap_regs_valid;
+}
+
+// Kopioi trap-kehyskuva kutsujan puskuriin — false jos ei validia kuvaa.
+pub fn trapRegs(pid: u64, out: *[16]u64) bool {
+    // Hae prosessin indeksi.
+    const idx = findIndex(pid) orelse return false;
+    // Vaadi validi kuva.
+    if (!processes[idx].trap_regs_valid) return false;
+    // Kopioi taulukko.
+    out.* = processes[idx].trap_regs;
+    // Onnistui.
+    return true;
+}
+
 // Hae zombie-prosessin exit-koodi.
 pub fn exitCode(pid: u64) ?u32 {
     // Hae prosessin indeksi.
@@ -394,6 +467,16 @@ pub fn freePid(pid: u64) bool {
     processes[idx].parent_pid = NO_PARENT;
     processes[idx].exit_code = 0;
     processes[idx].page_table = 0;
+    // Persoonallisuus ei periydy uudelle omistajalle (stale-trap estyy:
+    // vapautetun pidin tilalle tuleva plugin alkaa Zinux-tilassa).
+    processes[idx].linux_trapped = false;
+    processes[idx].trap_regs = [_]u64{0} ** 16;
+    processes[idx].trap_regs_valid = false;
+    // Persoonallisuus ei periydy uudelle omistajalle (stale-trap estyy:
+    // vapautetun pidin tilalle tuleva plugin alkaa Zinux-tilassa).
+    processes[idx].linux_trapped = false;
+    processes[idx].trap_regs = [_]u64{0} ** 16;
+    processes[idx].trap_regs_valid = false;
     // Alenna lukumäärää.
     if (used_count > 0) used_count -= 1;
     return true;

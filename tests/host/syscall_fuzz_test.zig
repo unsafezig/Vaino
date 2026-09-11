@@ -8,8 +8,8 @@ test "expect enosys for unknown slots" {
     try std.testing.expect(fuzz.expectEnosys(0));
     // Slot 4 sys_ipc_send rekisteröity (Vaihe 8.1).
     try std.testing.expect(!fuzz.expectEnosys(4));
-    // Slot 32 taulukon ulkopuolella.
-    try std.testing.expect(fuzz.expectEnosys(32));
+    // Slot 33 ensimmäinen tyhjä (VSL-4B: taulukko 33, 32 on trap).
+    try std.testing.expect(fuzz.expectEnosys(33));
     // sys_write rekisteröity.
     try std.testing.expect(!fuzz.expectEnosys(1));
     // VFS-syscallit rekisteröity (VSL-4A: 29/30/31, taulukko täynnä).
@@ -31,6 +31,9 @@ test "dangerous syscalls flagged" {
     try std.testing.expect(fuzz.isDangerous(29));
     try std.testing.expect(fuzz.isDangerous(30));
     try std.testing.expect(fuzz.isDangerous(31));
+    // Trap-enable vaarallinen (persoonallisuus-mutaatio, VSL-4B).
+    try std.testing.expect(fuzz.isDangerous(32));
+    try std.testing.expect(!fuzz.expectEnosys(32));
 }
 
 test "lcg and fuzz num deterministic" {

@@ -317,6 +317,10 @@ pub fn runAll() void {
     const vsl_file_boot = @import("syscall/vsl_file_syscall.zig");
     vsl_file_boot.runBootTest();
     betweenSuites();
+    // VSL-4B — Linux-trap (hello-ELF ilman shimmiä) + regs-kuva + disable.
+    const vsl_trap_boot = @import("syscall/vsl_trap_syscall.zig");
+    vsl_trap_boot.runBootTest();
+    betweenSuites();
     // K2-verdict: jokainen suite-epäonnistuminen kulkee log.err:in kautta,
     // joten nollasta poikkeava laskuri tarkoittaa osittaista ajoa. Älä
     // valehtele vihreää — CI lukee tämän rivin eikä hiljaista jatkoa.

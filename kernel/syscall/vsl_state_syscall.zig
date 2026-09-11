@@ -96,10 +96,9 @@ fn cleanupPlugin(pid: u64) void {
     _ = dispatch.invoke(abi.SYS_plugin_unload, pid, 0, 0, 0, 0, 0);
 }
 
-// Täytä VslState checkpoint-inventaariosta + cap-sloteista.
-// Palauttaa false + lokittaa jos jokin puuttuu (inventaarion täytyy
-// mahtua kokonaan — katkaisu on virhe, ei hiljainen typistys).
-fn describeCheckpoint(pid: u64, cpid: u32, out: *vstate.VslState) bool {
+// Täytä VslState checkpoint-inventaariosta + cap-sloteista + trap-regseistä.
+// Jaettu apu trap-testille (yksi lähde kuvaukselle) — boot-testi kutsuu.
+pub fn describeCheckpoint(pid: u64, cpid: u32, out: *vstate.VslState) bool {
     // Sivumäärä inventaariosta.
     const n = snapshot.checkpointPageCount(cpid) orelse {
         // Tuntematon cpid.
@@ -164,6 +163,16 @@ fn describeCheckpoint(pid: u64, cpid: u32, out: *vstate.VslState) bool {
             log.err("VSL state cap add failed");
             return false;
         };
+    }
+    // Trap-kehyskuva regseihin jos validi (VSL-4B: ensimmäinen täyttö;
+    // ei-trapatulla pidillä nollat säilyvät — rehellinen raja).
+    if (process.trapRegsValid(pid)) {
+        // Kopioi kuva (pitäisi onnistua validina — muuten virhe).
+        if (!process.trapRegs(pid, &out.regs)) {
+            // Kuva katosi kesken täytön.
+            log.err("VSL state regs missing");
+            return false;
+        }
     }
     // Täyttö valmis.
     return true;
