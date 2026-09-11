@@ -37,6 +37,8 @@ const vsl_elf = @embedFile("../loader/vsl_prog.bin");
 const dirty_elf = @embedFile("../loader/dirty_test_prog.bin");
 // Upotettu crash-test-ELF — build.zig kopioi crash-bin:n tähän (31.5.5).
 const crash_elf = @embedFile("../loader/crash_test_prog.bin");
+// Upotettu VSL file-I/O-demo-ELF — build.zig kopioi file-bin:n tähän (VSL-4A).
+const file_elf = @embedFile("../loader/vsl_file_test_prog.bin");
 
 // Plugin-ELF-tunniste sys_plugin_load a1:lle (vaihe 30, ensimmäinen kuva).
 pub const PLUGIN_EMBEDDED_ID: u64 = 0;
@@ -46,6 +48,8 @@ pub const VSL_EMBEDDED_ID: u64 = 1;
 pub const DIRTY_EMBEDDED_ID: u64 = 2;
 // Crash-test-ELF-tunniste sys_plugin_load a1:lle (31.5.5, neljäs kuva).
 pub const CRASH_EMBEDDED_ID: u64 = 3;
+// VSL file-I/O-demo-tunniste sys_plugin_load a1:lle (VSL-4A, viides kuva).
+pub const FILE_EMBEDDED_ID: u64 = 4;
 // Plugin-pinon heap-slot — vapaa väli (112-115 spawn, 114 cross-ipc).
 pub const PLUGIN_STACK_SLOT: u64 = 116;
 // VSL-plugin-pinon heap-slot — seuraava vapaa (117 xfer-capboot).
@@ -54,6 +58,8 @@ pub const VSL_STACK_SLOT: u64 = 118;
 pub const DIRTY_STACK_SLOT: u64 = 119;
 // Crash-test-pinon heap-slot — seuraava vapaa (120).
 pub const CRASH_STACK_SLOT: u64 = 120;
+// File-demo-pinon heap-slot — seuraava vapaa (121).
+pub const FILE_STACK_SLOT: u64 = 121;
 // Montako pluginia rekisteriin mahtuu (pieni, mitattava raja).
 // Montako pluginia rekisteriin mahtuu (pieni, mitattava raja).
 pub const MAX_PLUGINS: usize = 8;
@@ -94,10 +100,10 @@ fn ensureInit() void {
     registry_init = true;
 }
 
-// Onko embedded-tunniste kelvollinen plugin-ELF (0=plugin, 1=VSL, 2=dirty, 3=crash).
+// Onko embedded-tunniste kelvollinen plugin-ELF (0=plugin, 1=VSL, 2=dirty, 3=crash, 4=file).
 pub fn isValidEmbeddedId(id: u64) bool {
-    // Neljä tuettua plugin-binääriä (vaihe 30 + VSL-0 + 31.5.4 + 31.5.5).
-    return id == PLUGIN_EMBEDDED_ID or id == VSL_EMBEDDED_ID or id == DIRTY_EMBEDDED_ID or id == CRASH_EMBEDDED_ID;
+    // Viisi tuettua plugin-binääriä (vaihe 30 + VSL-0 + 31.5.4 + 31.5.5 + VSL-4A).
+    return id == PLUGIN_EMBEDDED_ID or id == VSL_EMBEDDED_ID or id == DIRTY_EMBEDDED_ID or id == CRASH_EMBEDDED_ID or id == FILE_EMBEDDED_ID;
 }
 
 // Upotettu ELF-kuva tunnisteella — null jos tuntematon (41.1: swap lataa
@@ -109,6 +115,8 @@ pub fn elfForId(embedded_id: u64) ?[]const u8 {
     if (embedded_id == DIRTY_EMBEDDED_ID) return dirty_elf;
     // Crash-test-kuva (31.5.5).
     if (embedded_id == CRASH_EMBEDDED_ID) return crash_elf;
+    // File-demo-kuva (VSL-4A).
+    if (embedded_id == FILE_EMBEDDED_ID) return file_elf;
     // Perus-plugin (vaihe 30).
     if (embedded_id == PLUGIN_EMBEDDED_ID) return plugin_elf;
     // Tuntematon tunniste.
@@ -124,6 +132,8 @@ pub fn stackSlotForId(embedded_id: u64) ?u64 {
     if (embedded_id == DIRTY_EMBEDDED_ID) return DIRTY_STACK_SLOT;
     // Crash-test-pino.
     if (embedded_id == CRASH_EMBEDDED_ID) return CRASH_STACK_SLOT;
+    // File-demo-pino.
+    if (embedded_id == FILE_EMBEDDED_ID) return FILE_STACK_SLOT;
     // Perus-plugin-pino.
     if (embedded_id == PLUGIN_EMBEDDED_ID) return PLUGIN_STACK_SLOT;
     // Tuntematon tunniste.
@@ -151,6 +161,11 @@ pub fn dirtyElf() []const u8 {
 // Upotetun crash-test-ELF:n tavut (31.5.5).
 pub fn crashElf() []const u8 {
     return crash_elf;
+}
+
+// Upotetun file-demo-ELF:n tavut (VSL-4A).
+pub fn fileElf() []const u8 {
+    return file_elf;
 }
 
 // Etsi pluginin rekisteri-indeksi pid:llä — null jos ei ladattu plugin.

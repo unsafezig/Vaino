@@ -58,11 +58,23 @@ pub const SYS_plugin_transfer: u64 = 26;
 pub const SYS_plugin_checkpoint: u64 = 27;
 // Syscall-numero: sys_plugin_restore(plugin_pid) → 0 tai neg. virhe (31.5.3).
 pub const SYS_plugin_restore: u64 = 28;
+// Syscall-numero: sys_vfs_open(path_ptr, path_len, flags) → kahva tai neg. virhe (VSL-4A).
+pub const SYS_vfs_open: u64 = 29;
+// Syscall-numero: sys_vfs_read(handle, buf, len, offset) → tavut tai neg. virhe (VSL-4A).
+pub const SYS_vfs_read: u64 = 30;
+// Syscall-numero: sys_vfs_close(handle) → 0 tai neg. virhe (VSL-4A).
+pub const SYS_vfs_close: u64 = 31;
 // Syscall-numero: sys_test_return — palaa kernel boot-testiin (vain kehitys).
 pub const SYS_test_return: u64 = 10;
 
+// HUOM: dispatch-taulukko ([32]) on nyt täynnä (1–31 + 10). Uusi syscall
+// vaatii jatkossa joko vapautuvan numeron tai taulukon kasvatuksen
+// mitatulla tarpeella (VSL_SPEC §9) — ei hiljaista laajennusta.
+
 // Virhekoodit (negatiiviset paluuarvot, Linux-yhteensopiva tyyli).
 pub const EPERM: i64 = -1;
+// Tiedostoa/polku ei löydy (VFS NotFound — VSL-4A open/read).
+pub const ENOENT: i64 = -2;
 pub const ECHILD: i64 = -10;
 pub const ESRCH: i64 = -3;
 pub const EAGAIN: i64 = -11;

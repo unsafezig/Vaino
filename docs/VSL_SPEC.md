@@ -145,12 +145,13 @@ ei VT-x:ää, ei IRQ/MMIO-cap-tyyppejä coressa VSL:ää varten, ei
 | **4A** | fd-syscallit ring-3:ssa (`open/read/close` VFS-taustalla, `isIoReady(file)=true`) | Pieni, mitattava koe |
 | **4B** | Trap-and-emulate muokkaamattomille Linux-ELF:eille (Linux-syscall → Zinux-käännös trap-polulla) | Suurin kernel-työ sitten 31.5:n |
 
-**4A-suunnitelma (seuraava koodisäie):** uusi syscall-perhe (`SYS_vfs_open/read/close`
-tai fd-avaimet olemassaoleviin, `dispatch`-tauluun ≤32 rajaan), VFS-polku
-ring-3-kutsuvalmiiksi (nykyinen boot-polku eriytetään user-copy-rajalla),
-shim (`vsl_libc`: `openat` ENOSYS → toimiva), fd-taulun `file`-kind
-`isIoReady=true`. Boot-todiste: ring-3 `open("/tmp/welcome") → read → close`
-+ negatiivit (BADF, NotFound). Ei uusia cap-tyyppejä (port+memory riittävät).
+**4A-suunnitelma (toteutettu 2026-09-11) ✅:** `SYS_vfs_open/read/close`
+(29/30/31 — dispatch-taulukko nyt täynnä) + `vfs.errnoOf/isOpen` +
+`vsl_libc`-shim (`vslOpenFile/vslReadFile/vslCloseFile`, fd-reititys,
+R10-offset) + `vsl_file_test`-demo ring-3:ssa (`vsl-file: TMPFS`).
+Boot-todiste: ENOENT/EINVAL/EBADF-negatiivit + invoke open/read/close +
+ring-3 open→read→EOF→close→tuplasulku-EBADF. Ei uusia cap-tyyppejä.
+Kahvat globaalissa taulukossa (ei per-pid-fd:tä — yhden pluginin koe).
 
 **4B-rajaus (tutkimusvaihe, ei lupausta):** edellyttää per-plugin
 syscall-pysäytystä (IDT/`syscall_entry`-haara + Linux-numeroiden käännös

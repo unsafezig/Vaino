@@ -283,6 +283,39 @@ pub fn close(handle: FileHandle) void {
     entry.used = false;
 }
 
+// Onko kahva auki (syscall-EBADF-portti — close on hiljaa idempotentti,
+// syscall-kerros vaatii tarkan vastauksen).
+pub fn isOpen(handle: FileHandle) bool {
+    // Ydin alustettava — muuten mikään ei ole auki.
+    if (!initialized) return false;
+    // Kahva indeksinä.
+    const idx: usize = @intCast(handle);
+    // Indeksi ulos rajojen?
+    if (idx >= MAX_OPEN_FILES) return false;
+    // Palauta käyttötilanne.
+    return open_files[idx].used;
+}
+
+// VFS-virhe → negatiivinen errno (Linux-yhteensopivat numerot, kovakoodattu
+// jotta ydin pysyy riippuvuudettomana; `libs/zinuxabi.zig` peilaa samat
+// arvot — vastaavuus pinnattu host-testillä).
+pub fn errnoOf(err: VfsError) i64 {
+    return switch (err) {
+        // Polkua/tiedostoa ei löydy (ENOENT).
+        VfsError.NotFound => -2,
+        // Operaatio ei tuettu (ENOSYS — esim. read-only FS:n write).
+        VfsError.NotSupported => -38,
+        // Polku tyhjä/virheellinen (EINVAL).
+        VfsError.InvalidPath => -22,
+        // Kahvataulu täynnä (ENOMEM — resurssit loppu).
+        VfsError.TooManyFiles => -12,
+        // initCore() puuttuu (ENOSYS — ei kernel-kyselyä ilman alustusta).
+        VfsError.NotInitialized => -38,
+        // Mount-taulu täynnä (ENOMEM — resurssit loppu).
+        VfsError.TooManyMounts => -12,
+    };
+}
+
 // --- Boot/host-testin sisäänrakennettu test-FS ---
 
 // Testitiedoston sisältö (5 tavua).

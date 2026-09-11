@@ -17,16 +17,26 @@ test "vsl fd console reserved and file alloc free" {
     // Avaa tiedosto → ensimmäinen vapaa fd (3).
     const h = try fd.openFile("/tmp/welcome");
     try std.testing.expectEqual(@as(u32, 3), h);
-    // Kind file, ei vielä I/O-valmis (rehellinen raja).
+    // Kind file, ei vielä I/O-valmis (ei kernel-kahvaa — rehellinen raja).
     try std.testing.expectEqual(fd.FdKind.file, try fd.kindOf(h));
     try std.testing.expect(!fd.isIoReady(h));
+    try std.testing.expectEqual(fd.INVALID_HANDLE, try fd.handleOf(h));
+    // Sido kernel-kahva (shim sys_vfs_open-paluusta) → I/O-valmis.
+    try fd.bindHandle(h, 7);
+    try std.testing.expectEqual(@as(u32, 7), try fd.handleOf(h));
+    try std.testing.expect(fd.isIoReady(h));
+    // Offset etenee luvuissa (saturaatio host-testattu).
+    try fd.advanceOffset(h, 5);
+    // Konsoli ei sido kahvaa (väärä kerros).
+    try std.testing.expectError(fd.FdError.NotSupported, fd.bindHandle(1, 0));
     // Laskuri kasvanut.
     try std.testing.expectEqual(@as(usize, 4), fd.openCount());
-    // Sulje → vapautuu.
+    // Sulje → vapautuu (kahvasidonta katkeaa).
     try fd.closeFd(h);
     try std.testing.expectEqual(@as(usize, 3), fd.openCount());
     // Suljettu fd → BadFd.
     try std.testing.expectError(fd.FdError.BadFd, fd.kindOf(h));
+    try std.testing.expectError(fd.FdError.BadFd, fd.bindHandle(h, 0));
 }
 
 test "vsl fd rejects bad paths and full table" {

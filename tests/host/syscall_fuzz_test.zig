@@ -12,6 +12,10 @@ test "expect enosys for unknown slots" {
     try std.testing.expect(fuzz.expectEnosys(32));
     // sys_write rekisteröity.
     try std.testing.expect(!fuzz.expectEnosys(1));
+    // VFS-syscallit rekisteröity (VSL-4A: 29/30/31, taulukko täynnä).
+    try std.testing.expect(!fuzz.expectEnosys(29));
+    try std.testing.expect(!fuzz.expectEnosys(30));
+    try std.testing.expect(!fuzz.expectEnosys(31));
 }
 
 test "dangerous syscalls flagged" {
@@ -23,6 +27,10 @@ test "dangerous syscalls flagged" {
     // ipc_send/recv dereferoivat user-osoitteita.
     try std.testing.expect(fuzz.isDangerous(4));
     try std.testing.expect(fuzz.isDangerous(5));
+    // VFS-syscallit vaarallisia (user-osoite + kahvataulu, VSL-4A).
+    try std.testing.expect(fuzz.isDangerous(29));
+    try std.testing.expect(fuzz.isDangerous(30));
+    try std.testing.expect(fuzz.isDangerous(31));
 }
 
 test "lcg and fuzz num deterministic" {

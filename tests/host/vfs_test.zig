@@ -39,3 +39,34 @@ test "vfs write rejected on read-only testfs" {
     // Sulje kahva.
     vfs.close(h);
 }
+
+test "vfs errno mapping matches linux numbers" {
+    // NotFound → ENOENT (-2, zinuxabi-peili).
+    try std.testing.expectEqual(@as(i64, -2), vfs.errnoOf(vfs.VfsError.NotFound));
+    // InvalidPath → EINVAL (-22).
+    try std.testing.expectEqual(@as(i64, -22), vfs.errnoOf(vfs.VfsError.InvalidPath));
+    // NotSupported/NotInitialized → ENOSYS (-38).
+    try std.testing.expectEqual(@as(i64, -38), vfs.errnoOf(vfs.VfsError.NotSupported));
+    try std.testing.expectEqual(@as(i64, -38), vfs.errnoOf(vfs.VfsError.NotInitialized));
+    // TooManyFiles/TooManyMounts → ENOMEM (-12).
+    try std.testing.expectEqual(@as(i64, -12), vfs.errnoOf(vfs.VfsError.TooManyFiles));
+    try std.testing.expectEqual(@as(i64, -12), vfs.errnoOf(vfs.VfsError.TooManyMounts));
+}
+
+test "vfs isOpen tracks handles" {
+    // Alustamaton → mikään ei auki.
+    vfs.initCore();
+    try vfs.registerTestMount();
+    // Tuntematon kahva kiinni.
+    try std.testing.expect(!vfs.isOpen(7));
+    // Rajojen ulkopuoli kiinni.
+    try std.testing.expect(!vfs.isOpen(99));
+    // Avaa → auki.
+    const h = try vfs.open("/test/hello");
+    try std.testing.expect(vfs.isOpen(h));
+    // Sulje → kiinni (idempotentti close ei kaada toista sulkua).
+    vfs.close(h);
+    try std.testing.expect(!vfs.isOpen(h));
+    vfs.close(h);
+    try std.testing.expect(!vfs.isOpen(h));
+}

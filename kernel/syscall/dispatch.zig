@@ -48,6 +48,8 @@ const plugin_scope = @import("../plugin/scope.zig");
 const ns_map = @import("../plugin/ns_map.zig");
 // Tuo snapshot-checkpoint — sys_plugin_checkpoint + unload-reclaim (31.5.2).
 const snapshot = @import("../snapshot.zig");
+// Tuo VFS-ydin — open/read/close + errnoOf/isOpen ring-3-tiedostoille (VSL-4A).
+const vfs = @import("../fs/vfs_core.zig");
 
 // Syscall-käsittelijän funktiotyyppi (6 argumenttia, i64 paluu).
 const SyscallFn = *const fn (u64, u64, u64, u64, u64, u64) i64;
@@ -135,6 +137,70 @@ fn sysRead(a1: u64, a2: u64, a3: u64, _: u64, _: u64, _: u64) i64 {
     user_access.clac();
     // Puskuri täynnä ilman newlinea.
     return @intCast(len);
+}
+
+// Käyttäjäpolun maksimipituus VFS-avauksessa (tmpfs-nimet lyhyitä;
+// pidempi katkaistaisiin hiljaa, joten hylätään EINVAL:lla).
+const VFS_PATH_MAX: u64 = 256;
+// Yhden read-kutsun maksimikertymä (kernel-pinon staging-puskuri).
+const VFS_READ_MAX: usize = 256;
+
+// sys_vfs_open — avaa VFS-polku lukuun (VSL-4A: fd-syscallit ring-3:ssa).
+// ABI: RAX=29, RDI=path_ptr, RSI=path_len, RDX=flags (vain 0=read-only).
+// Paluu: kahva (≥0) tai neg. errno (ENOENT/EINVAL/ENOMEM).
+fn sysVfsOpen(a1: u64, a2: u64, a3: u64, _: u64, _: u64, _: u64) i64 {
+    // Vain read-only avaus (liput varattu jatkoa varten — ei hiljaista ohitusta).
+    if (a3 != 0) return abi.EINVAL;
+    // Tyhjä polku ei kelpaa.
+    if (a2 == 0) return abi.EINVAL;
+    // Liian pitkä polku katkaistuisi stagingissa — hylkää suoraan.
+    if (a2 > VFS_PATH_MAX) return abi.EINVAL;
+    // Osoitin käyttäjän polkupuskuriin.
+    const user: [*]const u8 = @ptrFromInt(a1);
+    // Staging kernel-pinossa (ei suoraa user-deref VFS:ssä).
+    var kpath: [VFS_PATH_MAX]u8 = undefined;
+    // Kopioi polku (raja tarkistettu yllä — täysi kopio, ei typistystä).
+    const n = copyFromUser(&kpath, user, a2);
+    // Avaa VFS-polusta — virhe errnoina (NotFound → ENOENT).
+    const handle = vfs.open(kpath[0..@intCast(n)]) catch |err| return vfs.errnoOf(err);
+    // Palauta kahva (0..15 — ei-negatiivinen, erottuu errnosta).
+    return handle;
+}
+
+// sys_vfs_read — lue avoimesta kahvasta offsetista (VSL-4A).
+// ABI: RAX=30, RDI=handle, RSI=buf, RDX=len, R10=offset.
+// Paluu: tavut tai neg. errno (EBADF/ENOENT/ENOSYS).
+fn sysVfsRead(a1: u64, a2: u64, a3: u64, a4: u64, _: u64, _: u64) i64 {
+    // Kahva katkaistuna (ring-3 hallitsee rekisterejä — @intCast paniikki
+    // kaataisi kernelin; fail-closed isOpen-portin läpi).
+    const handle: vfs.FileHandle = @truncate(a1);
+    // Tuntematon/suljettu kahva → EBADF (Linux-pariteetti, ei ENOENT).
+    if (!vfs.isOpen(handle)) return abi.EBADF;
+    // Tyhjä luku on OK.
+    if (a3 == 0) return 0;
+    // Käyttäjän puskuri.
+    const user: [*]u8 = @ptrFromInt(a2);
+    // Staging kernel-pinossa (VFS ei koske user-muistiin suoraan).
+    var kbuf: [VFS_READ_MAX]u8 = undefined;
+    // Yhden kutsun katto (isompi etenee toistetuilla offset-luvuilla).
+    const want: usize = @min(@as(usize, @truncate(a3)), VFS_READ_MAX);
+    // Lue FS:ltä stagingiin — virhe errnoina.
+    const n = vfs.read(handle, kbuf[0..want], a4) catch |err| return vfs.errnoOf(err);
+    // Kopioi käyttäjälle, palauta tavumäärä.
+    return copyToUser(user, a3, kbuf[0..n], n);
+}
+
+// sys_vfs_close — sulje avoin kahva (VSL-4A).
+// ABI: RAX=31, RDI=handle. Paluu: 0 tai EBADF.
+fn sysVfsClose(a1: u64, _: u64, _: u64, _: u64, _: u64, _: u64) i64 {
+    // Kahva katkaistuna (sama paniikki-perustelu kuin readissä).
+    const handle: vfs.FileHandle = @truncate(a1);
+    // Tuntematon/suljettu kahva → EBADF (ei hiljaista no-op:ia syscallissa).
+    if (!vfs.isOpen(handle)) return abi.EBADF;
+    // Sulje (ydin on idempotentti — tarkistus yllä antaa tarkan vastauksen).
+    vfs.close(handle);
+    // Onnistui.
+    return 0;
 }
 
 // sys_exit — merkitse prosessi zombieksi ja palaa kerneliin ring 3:sta (Vaihe 24).
@@ -836,6 +902,11 @@ const handlers: [32]?SyscallFn = blk: {
     table[@intCast(abi.SYS_plugin_checkpoint)] = sysPluginCheckpoint;
     // Rekisteröi sys_plugin_restore (copy-back + W-palautus, 31.5.3).
     table[@intCast(abi.SYS_plugin_restore)] = sysPluginRestore;
+    // Rekisteröi VFS-tiedostosyscallit (VSL-4A: open/read/close ring-3:ssa).
+    // Taulukko ([32]) on nyt täynnä — kasvatus vain mitatulla tarpeella.
+    table[@intCast(abi.SYS_vfs_open)] = sysVfsOpen;
+    table[@intCast(abi.SYS_vfs_read)] = sysVfsRead;
+    table[@intCast(abi.SYS_vfs_close)] = sysVfsClose;
     // Palauta valmis taulukko.
     break :blk table;
 };

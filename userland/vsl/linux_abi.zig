@@ -19,6 +19,8 @@
 pub const LINUX_READ: u64 = 0;
 // write — tiedostokuvaajan kirjoitus.
 pub const LINUX_WRITE: u64 = 1;
+// close — tiedostokuvaajan sulku (VSL-4A).
+pub const LINUX_CLOSE: u64 = 3;
 // mmap — muistin kartoitus (vain anonyymi 1-sivu VSL-1:ssä).
 pub const LINUX_MMAP: u64 = 9;
 // brk — heap-rajan siirto (1 sivu/kutsu VSL-1:ssä).
@@ -29,7 +31,7 @@ pub const LINUX_GETPID: u64 = 39;
 pub const LINUX_EXIT: u64 = 60;
 // uname — järjestelmän nimi (VSL vastaa itse, ei kernel-kyselyä).
 pub const LINUX_UNAME: u64 = 63;
-// openat — tiedoston avaus (VSL-2, nyt ENOSYS-portti).
+// openat — tiedoston avaus (VSL-4A: sys_vfs_open).
 pub const LINUX_OPENAT: u64 = 257;
 
 // Zinux-syscall-numerot (peili `libs/zinuxabi.zig`:stä — ei importia).
@@ -43,6 +45,12 @@ pub const ZINUX_GETPID: u64 = 3;
 pub const ZINUX_READ: u64 = 11;
 // sys_mem_map(slot, addr, flags) — brk/mmap-tausta.
 pub const ZINUX_MEM_MAP: u64 = 23;
+// sys_vfs_open(path_ptr, path_len, flags) — tiedoston avaus (VSL-4A).
+pub const ZINUX_VFS_OPEN: u64 = 29;
+// sys_vfs_read(handle, buf, len, offset) — tiedoston luku (VSL-4A).
+pub const ZINUX_VFS_READ: u64 = 30;
+// sys_vfs_close(handle) — tiedoston sulku (VSL-4A).
+pub const ZINUX_VFS_CLOSE: u64 = 31;
 
 // Virhekoodit (peili `libs/zinuxabi.zig`:stä).
 // ENOSYS — tuntematon Linux-syscall VSL:ssä.
@@ -56,10 +64,13 @@ pub const EINVAL: i64 = -22;
 pub fn linuxToZinux(linux_nr: u64) ?u64 {
     // Taulukko haku: pieni switch, ei silmukkaa.
     return switch (linux_nr) {
-        // read → sys_read.
+        // read → sys_read (konsoli-oletus; tiedostot reitittää shim
+        // fd-kindin mukaan sys_vfs_read:iin — puhdas numero ei riitä).
         LINUX_READ => ZINUX_READ,
         // write → sys_write.
         LINUX_WRITE => ZINUX_WRITE,
+        // close → sys_vfs_close.
+        LINUX_CLOSE => ZINUX_VFS_CLOSE,
         // mmap → sys_mem_map (anonyymi 1-sivu).
         LINUX_MMAP => ZINUX_MEM_MAP,
         // brk → sys_mem_map (1 sivu/kutsu).
@@ -68,7 +79,9 @@ pub fn linuxToZinux(linux_nr: u64) ?u64 {
         LINUX_GETPID => ZINUX_GETPID,
         // exit → sys_exit.
         LINUX_EXIT => ZINUX_EXIT,
-        // uname/openat/tuntemattomat: ei suoraa vastinetta.
+        // openat → sys_vfs_open (VSL-4A).
+        LINUX_OPENAT => ZINUX_VFS_OPEN,
+        // uname/tuntemattomat: ei suoraa vastinetta.
         else => null,
     };
 }

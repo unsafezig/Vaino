@@ -75,6 +75,12 @@ pub fn isRegistered(num: u64) bool {
         27 => true,
         // sys_plugin_restore (31.5.3) — kopioi kehyksiä + mutatoi PTE:itä fuzzissa.
         28 => true,
+        // sys_vfs_open (VSL-4A) — dereferoi user-polkuosoitteen fuzzissa.
+        29 => true,
+        // sys_vfs_read (VSL-4A) — dereferoi user-puskuriosoitteen fuzzissa.
+        30 => true,
+        // sys_vfs_close (VSL-4A) — mutatoi kahvataulukkoa fuzzissa.
+        31 => true,
         // Kaikki muut slotit tyhjät tai taulukon ulkopuolella.
         else => false,
     };
@@ -136,6 +142,12 @@ pub fn isDangerous(num: u64) bool {
         27 => true,
         // sys_plugin_restore — kopioi kehyksiä + mutatoi PTE:itä fuzzissa.
         28 => true,
+        // sys_vfs_open — dereferoi user-polkuosoitteen fuzzissa.
+        29 => true,
+        // sys_vfs_read — dereferoi user-puskuriosoitteen fuzzissa.
+        30 => true,
+        // sys_vfs_close — mutatoi kahvataulukkoa fuzzissa.
+        31 => true,
         // Muut numerot turvallisia tai ENOSYS.
         else => false,
     };

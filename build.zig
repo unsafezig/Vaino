@@ -848,6 +848,50 @@ pub fn build(b: *std.Build) void {
     copy_crash_test_elf.addFileArg(embedded_crash_test_path);
     copy_crash_test_elf.step.dependOn(&crash_test_exe.step);
 
+    // --- VSL file-I/O demo ELF (VSL-4A) — upotetaan kerneliin embedded_id=4 ---
+    // Shim-kirjastot userland-instansseina (host-instanssit eri verkossa).
+    const vsl_abi_user_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/linux_abi.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    const vsl_fd_user_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/fd.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    const vsl_libc_user_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/vsl_libc.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    vsl_libc_user_mod.addImport("linux_abi", vsl_abi_user_mod);
+    vsl_libc_user_mod.addImport("vsl_fd", vsl_fd_user_mod);
+    const vsl_file_test_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl_file_test/main.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    vsl_file_test_mod.red_zone = false;
+    vsl_file_test_mod.stack_protector = false;
+    vsl_file_test_mod.single_threaded = true;
+    vsl_file_test_mod.code_model = .large;
+    vsl_file_test_mod.addImport("vsl_libc", vsl_libc_user_mod);
+    vsl_file_test_mod.addImport("vsl_fd", vsl_fd_user_mod);
+    const vsl_file_test_exe = b.addExecutable(.{
+        .name = "zinux-vsl-file-test",
+        .root_module = vsl_file_test_mod,
+    });
+    vsl_file_test_exe.setLinkerScript(b.path("userland/vsl_file_test/user.ld"));
+    vsl_file_test_exe.root_module.addAssemblyFile(b.path("userland/vsl_file_test/start.S"));
+    b.installArtifact(vsl_file_test_exe);
+
+    const embedded_vsl_file_test_path = b.path("kernel/loader/vsl_file_test_prog.bin");
+    const copy_vsl_file_test_elf = b.addSystemCommand(&.{ "cp", "-f" });
+    copy_vsl_file_test_elf.addFileArg(vsl_file_test_exe.getEmittedBin());
+    copy_vsl_file_test_elf.addFileArg(embedded_vsl_file_test_path);
+    copy_vsl_file_test_elf.step.dependOn(&vsl_file_test_exe.step);
+
     const kernel = b.addExecutable(.{
         .name = "zinux-kernel",
         .root_module = kernel_mod,
@@ -886,6 +930,7 @@ pub fn build(b: *std.Build) void {
     kernel.step.dependOn(&copy_vsl_elf.step);
     kernel.step.dependOn(&copy_dirty_test_elf.step);
     kernel.step.dependOn(&copy_crash_test_elf.step);
+    kernel.step.dependOn(&copy_vsl_file_test_elf.step);
     b.installArtifact(kernel);
 
     // --- Host-testit ---
@@ -1181,6 +1226,8 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("vsl_shell", vsl_shell_host_mod);
+    // vsl_libc reitittää fd-kindin mukaan — tarvitsee fd-taulun verkossaan.
+    vsl_libc_host_mod.addImport("vsl_fd", vsl_fd_host_mod);
     // 31.5.1 — snapshot-kävelymatematiikka host-testeihin (riippuvuudeton).
     const snapshot_core_host_mod = b.createModule(.{
         .root_source_file = b.path("kernel/snapshot_core.zig"),

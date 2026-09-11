@@ -1095,6 +1095,38 @@ shared-port healing works today (Phase 33 pattern).
 
 ---
 
+#### Phase 42 — VSL-4A: fd-Syscalls in Ring 3 ✅
+
+> **Goal**: VSL `file`-fds work in ring 3 through real syscalls
+> (`SYS_vfs_open/read/close` 29/30/31); the dispatch table is now full (32/32).
+
+| # | Task | File | Status |
+|---|------|------|--------|
+| 42.1 | `SYS_vfs_open/read/close` + errno map + fuzz gates | `dispatch.zig`, `vfs_core.zig`, `syscall_fuzz_core.zig` | ✅ invoke + `VSL file syscall OK` |
+| 42.2 | Shim (`vslOpenFile/vslReadFile/vslCloseFile`, R10-offset) + fd handle binding | `vsl_libc.zig`, `fd.zig`, `linux_abi.zig` | ✅ `vsl-file: TMPFS` from ring 3 |
+| 42.3 | Ring-3 demo ELF + boot test (incl. ENOENT/EINVAL/EBADF) | `userland/vsl_file_test/`, `vsl_file_syscall.zig` | ✅ `VSL file IO OK` |
+
+**Dependency**: Phase 6 (VFS/tmpfs), Phase 39 (ABI table), VSL-2 (fd-table).
+
+**Test**:
+```bash
+zig build test
+# vfs errno/isOpen + fuzz gates + fd bind + shim matrix OK (171 passed)
+zig build boot-test
+# Expected serial: VSL file syscall OK, vsl-file: TMPFS,
+# userland vsl file OK, VSL file IO OK, All boot tests OK
+```
+
+**Implementation summary:**
+- **Syscalls** (`dispatch.zig`, table now 32/32 full): `sysVfsOpen(path_ptr,path_len,flags=0)` (flags!=0/len 0/>256 → EINVAL, kernel-staged copy, `vfs.open` → handle or `errnoOf`), `sysVfsRead(handle,buf,len,offset)` (`@truncate` + `isOpen` → EBADF, 256 B staging, `copyToUser`), `sysVfsClose(handle)` (`isOpen` → EBADF else close → 0). `vfs_core.errnoOf` (NotFound→ENOENT(-2, new `zinuxabi` mirror), InvalidPath→EINVAL, NotSupported/NotInitialized→ENOSYS, TooManyFiles/TooManyMounts→ENOMEM) + `isOpen`, both host-tested. Fuzz core marks 29–31 registered+dangerous.
+- **Shim** (`vsl_libc.zig` + `fd.zig`): `zinuxSyscall4` (offset in R10 — Linux convention, Phase-31 precedent), `vslOpen/vslReadAt/vslClose` thin wrappers, `vslOpenFile/vslReadFile/vslCloseFile` with fd-table routing (console → 1/11, file → 30 + offset bookkeeping, pipe → ENOSYS) and pure `fdErrToNeg` mapper (host-tested incl. syscall-free paths: console no-op, unbound-file EBADF). `linux_abi`: openat→29, close→31 (new `LINUX_CLOSE=3`).
+- **Demo ELF** (`userland/vsl_file_test/`, embedded_id=4, `@0x90097000`, stack slot 121): Zig program on the shim — open `/tmp/welcome` → read 5 B → print READ bytes (`vsl-file: TMPFS` serial marker) → EOF==0 → close==0 → double-close EBADF → `userland vsl file OK` + `SYS_test_return`.
+- **Boot test** (`vsl_file_syscall.zig`, self-contained VFS+tmpfs init): ENOENT/EINVAL/empty/EBADF negatives → invoke open/read/EOF/close/double-close → `VSL file syscall OK` → ring-3 demo → `VSL file IO OK` → LIFO unload.
+- **Key design decision**: VFS handles stay global (no per-pid fd tables) — one-plugin experiment, isolation limit documented in VSL_SPEC §11; per-pid tables are VSL-4B/RBAC follow-up, not smuggled in here.
+- **Verification:** host 171/171, freestanding clean, 3× QEMU green with `VSL file syscall OK`, `vsl-file: TMPFS`, `userland vsl file OK`, `VSL file IO OK`, `All boot tests OK`, `Full boot OK`, exit 0, 0 `[ERR]`.
+
+---
+
 ### Known Issues (found by first local QEMU run, 2026-09-10)
 
 > Until 2026-09-10 no full `boot-test` had ever run locally (no QEMU/xorriso
@@ -1227,7 +1259,7 @@ indistinguishable from a green boot in CI.
 ✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
 ✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) + K5 (IDT loop) + K6 (TSS packing) + 31.5.4 (dirty tracking) + 31.5.5 (watchdog: kernel-CR3 restore in claim path) + Phase 41 (VSL-3 state descriptor + swap continuity + vsl-shell compose) — 3× green QEMU, 0 [ERR]
    ↓
-⬜ NEXT → VSL-4 (trap-and-emulate unmodified Linux ELFs / fd-syscalls) — research phase, no kernel Linux knowledge (core stays clean)
+⬜ NEXT → VSL-4B (trap-and-emulate unmodified Linux ELFs) — research phase, no kernel Linux knowledge (core stays clean); 4A done (fd-syscalls green)
 ```
 
 **Parallelizable**: VSL-2 file work (fd-table, shell demo) can proceed alongside
@@ -1273,6 +1305,7 @@ graph TD
     V38 --> V39[Phase 39: VSL-1 mini-ABI]
     V39 --> V40[Phase 40: VSL-2 mini-shell]
     V40 --> V41[Phase 41: VSL-3 snapshot-ready]
+    V41 --> V42[Phase 42: VSL-4A fd-syscalls]
 ```
 
 ---
