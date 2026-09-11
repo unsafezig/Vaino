@@ -104,11 +104,38 @@ fn unwindLoaded(pids: []const u64) void {
 
 // Sävellä tehtävä minimaaliympäristöksi — lataa + rekisteröi scope-portin läpi.
 pub fn composeTask(spec: task.TaskSpec) ComposeResult {
+    // Ilman binääriohjausta: heuristiikan ehdotus sellaisenaan (vaihe 34).
+    return composeTaskWithIds(spec, null);
+}
+
+// Sävellä tehtävä binääriohjauksella — 41.3 (vsl-shell → VSL-kuva).
+//
+// `ids` (tai null) on kernel-luotettu reititys: se vaihtaa VAIN ladattavan
+// binäärin, ei tarpeita. Jokainen vaatimus kulkee yhä saman
+// manifesti+scope-portin läpi, ja tuntematon tunniste hylätään ennen kuin
+// yhtäkään pluginia ladataan. Composerilla ei ole syscall-pintaa
+// (boot-orkestraatio), joten ohjaus ei ole hyökkääjän tavoitettavissa.
+// Kavennus (reqNarrowsNeed) pätee yhä tyyppi/oikeus/scope-kenttiin —
+// ohjaus ei levennä yhtäkään niistä.
+pub fn composeTaskWithIds(spec: task.TaskSpec, ids: ?[]const u64) ComposeResult {
     // Vain yksi koostumus kerrallaan (toinen kieltäytyy — ei pinoamista).
     if (current.active) return .fail_registry;
     // Ratkaise tarpeet vaatimuksiksi (katto-ristiriita → hylkää, nolla ladattu).
     var reqs: [decomposer.MAX_COMPOSITION_PLUGINS]resolve.PluginReq = undefined;
     const n = resolve.resolve(spec, &reqs) catch return .fail_resolve;
+    // Binääriohjaus: korvaa ehdotetut tunnisteet kutsujan taulukolla.
+    if (ids) |wanted| {
+        // Pituuden pitää vastata tarpeita (ei hiljaista typistystä).
+        if (wanted.len != n) return .fail_resolve;
+        // Käy vaatimukset (mitään ei vielä ladattu — suora hylkäys).
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            // Vain tunnettu binääri kelpaa (rekisteri-ratkaisu vaiheessa 32+).
+            if (!loader.isValidEmbeddedId(wanted[k])) return .fail_resolve;
+            // Vaihda binääri — tyyppi/oikeudet/scope koskemattomina.
+            reqs[k].embedded_id = wanted[k];
+        }
+    }
     // Lataaja-parent on nykyinen prosessi (boot-testissä BOOT).
     const parent = process.currentPid();
     // Käy vaatimukset latausjärjestyksessä (hakemisto 0 = vanhin).

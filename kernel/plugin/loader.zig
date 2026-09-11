@@ -100,6 +100,36 @@ pub fn isValidEmbeddedId(id: u64) bool {
     return id == PLUGIN_EMBEDDED_ID or id == VSL_EMBEDDED_ID or id == DIRTY_EMBEDDED_ID or id == CRASH_EMBEDDED_ID;
 }
 
+// Upotettu ELF-kuva tunnisteella — null jos tuntematon (41.1: swap lataa
+// saman binäärin tuoreena; yksi lähde, ei kahta if-ketjua).
+pub fn elfForId(embedded_id: u64) ?[]const u8 {
+    // VSL-kuva.
+    if (embedded_id == VSL_EMBEDDED_ID) return vsl_elf;
+    // Dirty-test-kuva (31.5.4).
+    if (embedded_id == DIRTY_EMBEDDED_ID) return dirty_elf;
+    // Crash-test-kuva (31.5.5).
+    if (embedded_id == CRASH_EMBEDDED_ID) return crash_elf;
+    // Perus-plugin (vaihe 30).
+    if (embedded_id == PLUGIN_EMBEDDED_ID) return plugin_elf;
+    // Tuntematon tunniste.
+    return null;
+}
+
+// Pinon heap-slot tunnisteella — null jos tuntematon (osoiteavaruudet
+// erilliset per pid, joten sama slotti kelpaa rinnakkain).
+pub fn stackSlotForId(embedded_id: u64) ?u64 {
+    // VSL-pino.
+    if (embedded_id == VSL_EMBEDDED_ID) return VSL_STACK_SLOT;
+    // Dirty-test-pino.
+    if (embedded_id == DIRTY_EMBEDDED_ID) return DIRTY_STACK_SLOT;
+    // Crash-test-pino.
+    if (embedded_id == CRASH_EMBEDDED_ID) return CRASH_STACK_SLOT;
+    // Perus-plugin-pino.
+    if (embedded_id == PLUGIN_EMBEDDED_ID) return PLUGIN_STACK_SLOT;
+    // Tuntematon tunniste.
+    return null;
+}
+
 // Upotetun plugin-ELF:n tavut swap-latausta varten (Vaihe 33 paikallaanvaihto).
 //
 // Palauttaa saman binäärin jonka loadPlugin lataa — swap lataa tuoreen
@@ -217,26 +247,9 @@ pub fn unregisterPlugin(pid: u64) bool {
 
 // Lataa plugin-ELF uudelle pid:lle omaan sivutauluun — palauttaa pid tai null.
 pub fn loadPlugin(embedded_id: u64) ?u64 {
-    // Vain tunnetut plugin-ELF:t kelpaavat (0=plugin, 1=VSL, 2=dirty, 3=crash).
-    if (!isValidEmbeddedId(embedded_id)) return null;
-    // Valitse ladattava kuva + pinon slotti tunnisteen mukaan.
-    const image: []const u8 = if (embedded_id == VSL_EMBEDDED_ID)
-        vsl_elf
-    else if (embedded_id == DIRTY_EMBEDDED_ID)
-        dirty_elf
-    else if (embedded_id == CRASH_EMBEDDED_ID)
-        crash_elf
-    else
-        plugin_elf;
-    // Pinon heap-slot kuvan mukaan (116 plugin, 118 VSL, 119 dirty, 120 crash).
-    const stack_slot: u64 = if (embedded_id == VSL_EMBEDDED_ID)
-        VSL_STACK_SLOT
-    else if (embedded_id == DIRTY_EMBEDDED_ID)
-        DIRTY_STACK_SLOT
-    else if (embedded_id == CRASH_EMBEDDED_ID)
-        CRASH_STACK_SLOT
-    else
-        PLUGIN_STACK_SLOT;
+    // Valitse ladattava kuva + pinon slotti tunnisteen mukaan (jaettu apuri).
+    const image = elfForId(embedded_id) orelse return null;
+    const stack_slot = stackSlotForId(embedded_id) orelse return null;
     // Allokoi seuraava vapaa pid prosessitaulukosta.
     const pid = process.allocNextPid() orelse return null;
     // Aseta vanhemmaksi nykyinen prosessi (unload-oikeus lataajalle).

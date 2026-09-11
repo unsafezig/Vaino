@@ -252,9 +252,14 @@ pub fn swapPlugin(old_pid: u64, embedded_id: u64) SwapResult {
     vmm.inheritKernelHalf(pml4_phys);
     // Kartoitukset uuteen PML4:ään.
     vmm.target_pml4_phys = pml4_phys;
-    // Lataa ELF-segmentit + pino (valitse binääri tunnisteella).
-    const elf_bytes = if (embedded_id == loader.PLUGIN_EMBEDDED_ID) loader.pluginElf() else null;
-    const loaded = if (elf_bytes) |bytes| elf.loadElfWithStack(bytes, loader.PLUGIN_STACK_SLOT) else null;
+    // Lataa ELF-segmentit + pino (sama kuva+slotti kuin loadPlugin —
+    // 41.1: VSL/dirty/crash vaihtuvat omikseen, ei aina perus-pluginiksi).
+    const elf_bytes = loader.elfForId(embedded_id);
+    const stack_slot = loader.stackSlotForId(embedded_id);
+    const loaded = if (elf_bytes != null and stack_slot != null)
+        elf.loadElfWithStack(elf_bytes.?, stack_slot.?)
+    else
+        null;
     // Takaisin kernelin PML4:ään.
     vmm.target_pml4_phys = null;
     // Lataus epäonnistui → siivoa kehys, vanha koskematon.
@@ -284,8 +289,9 @@ pub fn swapPlugin(old_pid: u64, embedded_id: u64) SwapResult {
         log.err("Hot-swap page table failed");
         return .fail_unload;
     }
-    // Päivitä entry/pino uuteen imageen.
-    if (!process.setLoaded(old_pid, new_image.entry, new_image.stack_top, loader.PLUGIN_STACK_SLOT)) {
+    // Päivitä entry/pino uuteen imageen (sama slotti kuin latauksessa).
+    const swap_slot = loader.stackSlotForId(embedded_id) orelse loader.PLUGIN_STACK_SLOT;
+    if (!process.setLoaded(old_pid, new_image.entry, new_image.stack_top, swap_slot)) {
         pmm.freeFrame(frame);
         _ = process.setPageTable(old_pid, 0);
         log.err("Hot-swap setLoaded failed");

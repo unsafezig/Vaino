@@ -512,6 +512,13 @@ pub fn checkpointDirtyCount(cpid: u32) ?usize {
     return ckpt.dirtyCount(cpid);
 }
 
+// Onko yksittäinen checkpoint-sivu likainen — null jos rajat ulkona (41.1:
+// VSL-tilakuvauksen PageRef.dirty täyttö; 31.5.4-merkinnän luku, ei kirjoitus).
+pub fn checkpointPageDirty(cpid: u32, idx: usize) ?bool {
+    // Delegoi ytimeen.
+    return ckpt.isDirty(cpid, idx);
+}
+
 // Poista yksi checkpoint: palauta W-bitit + vapauta kehykset.
 pub fn deleteCheckpoint(cpid: u32) bool {
     // Hae paikka + lue kentät ennen vapautusta.

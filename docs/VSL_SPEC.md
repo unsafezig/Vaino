@@ -1,6 +1,7 @@
 # VSL — Väinö Subsystem for Linux (plugin-määrittely)
 
-> **Tila**: VSL-0 stub + VSL-1 mini-ABI (tämä dokumentti on VSL:n kanoninen spec).
+> **Tila**: VSL-0 stub + VSL-1 mini-ABI + VSL-2 shell-polku + VSL-3 tilakuvaus
+> (tämä dokumentti on VSL:n kanoninen spec).
 > **Periaate**: Linux on yksi plugin muiden joukossa. Core pysyy puhtaana —
 > kaikki Linux-kompleksisuus elää `userland/vsl/`:ssä. `AI proposes. Kernel decides.`
 > (AGENTS.md). Eristysinvariantit I1–I7 (`docs/PLUGIN_MODEL.md`) pätevät VSL:ään
@@ -76,16 +77,24 @@ max_caps = 4,
 | plugin_xfer | `0xFFFFFFFF90092000` (+`.capboot` `...93000`) | 117 | test-only | `plugin_xfer_test_prog.bin` |
 | **vsl** | **`0xFFFFFFFF90094000`** | **118** | **1** | **`vsl_prog.bin`** |
 
-## 6. Tilakuvausformaatti (VSL-3-valmius, ei toteutusta vielä)
+## 6. Tilakuvausformaatti (VSL-3, toteutettu 2026-09-11) ✅
 
 ```zig
-VslState { regs: [16]u64, caps: [8]CapRef, pages: []PageRef }
+VslState { regs: [16]u64, caps: [8]CapRef, pages: [64]PageRef }
 // CapRef{slot, abi_type, rights_mask}, PageRef{virt, dirty: bool}
 ```
 
-Stateless + BOOT-omisteinen jaettu portti selviää jo `plugin_swap`:llä;
-omistetut cap:t kuolevat teardownissa kunnes Phase 31.5 (`snapshot.zig`)
-toteutetaan. Ei väitetä restorea toimivaksi nyt.
+* `userland/vsl/state.zig` — puhdas formaatti (ABI-numerot 1/5, kapasiteetti
+  64 == snapshot-inventaario, ei katkaisua); `regs` rehellisesti nollia
+  (31.5.2 ei kaappaa rekistereitä — VSL-4 varaus, ei valehtelua).
+* Täyttö kernelissä (`vsl_state_syscall.zig::describeCheckpoint`): sivut +
+  dirty-liput checkpointista, capit sloteista. Boot todistaa molemmat puolet:
+  VSL täysin puhdas, dirty_test tasan yksi likainen sivu pinon huipulla.
+* Stateless + BOOT-omisteinen jaettu portti selviää `plugin_swap`:llä
+  (41.2, entry-ankkuroitu); omistetut cap:t kuolevat teardownissa kunnes
+  omistetun tilan migraatio (31.5-raja, dokumentoitu).
+* Restorea sloteille/rekistereille ei väitetä (31.5.3-raja): sivu-rollback
+  copy-backilla, ei täyttä prosessiaikaa.
 
 ## 7. Mitattavat metriikat (AGENTS.md: Measurement)
 

@@ -190,3 +190,8 @@ test {
 test {
     _ = @import("watchdog_test.zig");
 }
+
+// Tuo VSL-tilakuvauksen yksikkötestit (VSL-3, 41.1).
+test {
+    _ = @import("vsl_state_test.zig");
+}

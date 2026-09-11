@@ -309,6 +309,10 @@ pub fn runAll() void {
     const watchdog_boot = @import("watchdog.zig");
     watchdog_boot.runBootTest();
     betweenSuites();
+    // Vaihe 41 — VSL-3: tilakuvaus + swap-jatkuvuus + vsl-shell-kooste.
+    const vsl_state_boot = @import("syscall/vsl_state_syscall.zig");
+    vsl_state_boot.runBootTest();
+    betweenSuites();
     // K2-verdict: jokainen suite-epäonnistuminen kulkee log.err:in kautta,
     // joten nollasta poikkeava laskuri tarkoittaa osittaista ajoa. Älä
     // valehtele vihreää — CI lukee tämän rivin eikä hiljaista jatkoa.

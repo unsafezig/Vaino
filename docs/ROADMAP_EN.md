@@ -1071,20 +1071,27 @@ zig build boot-test
 - `zig build` + `zig build -Dboot=full` (freestanding kernel incl. new boot test) → passed.
 - QEMU `boot-test` serial (`VirtIO block multi OK`, `vsl-ls`, `vsl-cat: TMPFS`, `VSL fs OK`) → **observed 2026-09-10, first local QEMU run (WSL2).**
 
-#### Phase 41 — VSL-3: Snapshot-Ready State Descriptor ⬜ Blocked on 31.5
+#### Phase 41 — VSL-3: Snapshot-Ready State Descriptor ✅
 
 > **Goal**: VSL carries a `VslState{regs, caps, pages}` descriptor so the
-> Phase 31.5 snapshot mechanism has a concrete target. No restore claimed
-> until `snapshot.zig/restore` exist.
+> Phase 31.5 snapshot mechanism has a concrete target. Restore of
+> slots/regs is NOT claimed (31.5.3 boundary) — page-rollback only.
 
 | # | Task | File | Status |
 |---|------|------|--------|
-| 41.1 | State descriptor format + dirty-page refs | `userland/vsl/state.zig` | ⬜ |
-| 41.2 | Shared-port continuity via `plugin_swap` (BOOT-owned port survives) | `kernel/plugin_swap.zig` reuse | ⬜ |
-| 41.3 | TDL `needs: [vsl-shell]` compose/decompose demo | `kernel/composer.zig` reuse | ⬜ |
+| 41.1 | State descriptor format + dirty-page refs | `userland/vsl/state.zig` | ✅ `VslState{addCap/addPage/dirtyCount/containsPage}` + host tests |
+| 41.2 | Shared-port continuity via `plugin_swap` (BOOT-owned port survives) | `kernel/plugin_swap.zig` reuse | ✅ same-pid VSL swap + `VSL swap continuity OK` |
+| 41.3 | TDL `needs: [vsl-shell]` compose/decompose demo | `kernel/composer.zig` reuse | ✅ `composeTaskWithIds` + `VSL compose OK` |
 
 **Dependency**: Phase 31.5 (snapshots) for owned-cap migration; stateless +
 shared-port healing works today (Phase 33 pattern).
+
+**41 implementation summary (2026-09-11):**
+- **Descriptor** (`userland/vsl/state.zig`, pure, host-tested): `VslState{version, regs[16], caps[8]{slot, abi_type, rights_mask}, pages[64]{virt, dirty}}` per VSL_SPEC §6. ABI numbers (1/5, bits 0–5) matching scope/manifest/TDL; capacity 64 == `MAX_SNAP_PAGES` so a full inventory never truncates. Stable error order `BadCapType → BadRights → TooManyCaps → BadPage → TooManyPages`. `regs` honestly zero (31.5.2 captures no registers — reserved for VSL-4). 3 host tests.
+- **Filler** (`kernel/syscall/vsl_state_syscall.zig::describeCheckpoint`): pages from checkpoint inventory + per-page `checkpointPageDirty` (new 3-line `snapshot.zig` wrapper over `ckpt.isDirty`); caps from `lookupSlotForPid` + `getObject` with kernel→ABI type map (port→1, memory→5, unknown skipped). Boot proof both sides: VSL describe (1 port/SEND cap round-trip, entry page anchored, `dirtyCount==0` agreeing with snapshot) + dirty_test describe (exactly 1 dirty ref on the stack-top page after a genuine ring-3 #PF).
+- **Swap generalization** (`loader.elfForId/stackSlotForId` + `swapPlugin` by id): swap previously hardcoded the generic plugin ELF (passing a VSL id silently loaded the wrong image). Single source shared with `loadPlugin` (behavior identical for id 0 — Phase-33 test untouched). 41.2: shared BOOT-owned port → VSL same-pid swap (entry unchanged proof) → `VS1` continuity message → ring-3 `vsl` run → unload → `VSL swap continuity OK`.
+- **Compose override** (`composer.composeTaskWithIds(spec, ids?)`): null = Phase-34 behavior; provided ids must match needs length + pass `isValidEmbeddedId` before anything loads, types/rights/scopes still gated per req (narrowing preserved, no syscall surface — boot-only routing). 41.3: `task "vsl-shell" { need port:send+recv; need memory:map+read; ... }` → bad-id + short-ids negatives → 2× VSL compose → `vsl`×2 run → LIFO decompose → `VSL compose OK`.
+- **Verification:** host 168/168, freestanding clean, 3× QEMU green with `dty`, `VSL state OK`, `VSL swap continuity OK`, `Task compose vsl-shell OK`, `VSL compose OK`, `All boot tests OK`, `Full boot OK`, exit 0, 0 `[ERR]`.
 
 ---
 
@@ -1218,17 +1225,9 @@ indistinguishable from a green boot in CI.
 ```
 ✅ DONE → Phases 0–37: Foundation … Eeden Gate (all green, QEMU serials pending CI)
 ✅ DONE → Phase 38 (VSL-0 stub) + Phase 39 (VSL-1 mini-ABI) + Phase 40 (VSL-2 shell path)
-✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) + K5 (IDT loop) + K6 (TSS packing) + 31.5.4 (dirty tracking) — 3× green QEMU, 0 [ERR]
+✅ DONE → K1 (suite wipes + hole-safe allocator) + K2 (failure gate) + K4 (callee-saved) + 31.5.1 (snapshot walk) + 31.5.2 (checkpoint+guard) + 31.5.3 (restore) + K5 (IDT loop) + K6 (TSS packing) + 31.5.4 (dirty tracking) + 31.5.5 (watchdog: kernel-CR3 restore in claim path) + Phase 41 (VSL-3 state descriptor + swap continuity + vsl-shell compose) — 3× green QEMU, 0 [ERR]
    ↓
-⬜ NEXT → 31.5.5 watchdog (auto-restore on crash via dirty/counter signals) + Phase 41 VSL-3 (fully unblocked: checkpoint+restore+dirty all live)
-   ↓
-⬜ THEN → Phase 41 — VSL-3 snapshot-ready state descriptor (needs 31.5.2+)
-   ↓
-⬛ HARD → 31.5.4/31.5.5 — dirty-tracking via #PF + watchdog (still the hardest kernel work)
-   ↓
-⬜ BLOCKED on 31.5 → Phase 41 — VSL-3 snapshot-ready state (owned caps need restore)
-   ↓
-⬛ HARD → Phase 31.5 — Snapshots & restore (hardest single kernel change, still open)
+⬜ NEXT → VSL-4 (trap-and-emulate unmodified Linux ELFs / fd-syscalls) — research phase, no kernel Linux knowledge (core stays clean)
 ```
 
 **Parallelizable**: VSL-2 file work (fd-table, shell demo) can proceed alongside

@@ -104,6 +104,14 @@ pub fn build(b: *std.Build) void {
     composer_resolve_kernel_mod.single_threaded = true;
     composer_resolve_kernel_mod.addImport("composer_task", composer_task_kernel_mod);
     kernel_mod.addImport("composer_resolve", composer_resolve_kernel_mod);
+    // VSL-3 — tilakuvausformaatti kerneliin (41.1 describe, cross-root → moduuli).
+    const vsl_state_kernel_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/state.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    vsl_state_kernel_mod.single_threaded = true;
+    kernel_mod.addImport("vsl_state", vsl_state_kernel_mod);
     // Vaihe 35.2 — etä-IPC-välittäjä kerneliin (cross-root → build-moduuli).
     // HMAC/tunneli/migraatio/failover kulkevat suhteellisina federate.zig:n
     // kautta (sama hakemistokaava kuin scope/manifest — ei build-moduulia).
@@ -1195,6 +1203,13 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("watchdog_core", watchdog_core_host_mod);
+    // VSL-3 — tilakuvausformaatti host-testeihin (riippuvuudeton).
+    const vsl_state_host_mod = b.createModule(.{
+        .root_source_file = b.path("userland/vsl/state.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("vsl_state", vsl_state_host_mod);
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });
