@@ -259,6 +259,13 @@ zig build run
 zig build test
 ```
 
+> **Oikea rauta (HP Stream):** QEMU:n jälkeen seuraava askel on bootti
+> oikealla läppärillä — vaiheittainen ohje (suomeksi):
+> [`docs/REAL_HARDWARE.md`](docs/REAL_HARDWARE.md).
+> Sisältää mallin tunnistuksen, USB-tikun teon, odotetut VGA-markerit,
+> vianmääritysmatriisin, VSL-kokeilut sekä rehelliset rajat
+> (ei verkkoa/levyä vielä — syy ja tiekartta mukana).
+
 ---
 ## Progress
 
