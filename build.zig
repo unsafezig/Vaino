@@ -1283,6 +1283,28 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("linux_hello_tool", linux_hello_tool_host_mod);
+    // ARM64-guest (Phase 1) — PL011 + semihosting host-testeihin.
+    // Vain rekisterivakiot/semihosting-numerot ajetaan; MMIO- ja HLT-koodia
+    // ei suoriteta hostilla (freestanding-koodi kääntyy mutta ei linkity).
+    const aarch64_uart_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/uart.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_uart", aarch64_uart_host_mod);
+    const aarch64_semihost_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/semihost.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_semihost", aarch64_semihost_host_mod);
+    // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
+    // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
+    const aarch64_verify_host_mod = b.createModule(.{
+        .root_source_file = b.path("tools/aarch64_verify.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
     const host_tests = b.addTest(.{
         .root_module = host_test_mod,
     });
@@ -1293,6 +1315,10 @@ pub fn build(b: *std.Build) void {
     const run_host_tests = b.step("test", "Run host unit tests");
     run_host_tests.dependOn(&b.addRunArtifact(host_tests).step);
     run_host_tests.dependOn(&b.addRunArtifact(elf_core_tests).step);
+    // ARM64-varmentimen omat testit (synteettinen ELF + korruptiotapaukset).
+    run_host_tests.dependOn(&b.addRunArtifact(b.addTest(.{
+        .root_module = aarch64_verify_host_mod,
+    })).step);
 
     // --- Vaihe 32.4 — plugin-install: hae URL:stä + varmenna Ed25519 + asenna ---
     // Käyttö: zig build plugin-install -Dplugin-url=<https|file> -Dplugin-key=<64 hex>
@@ -1479,4 +1505,81 @@ pub fn build(b: *std.Build) void {
     boot_test_cmd.setCwd(b.path("."));
     const boot_test_step = b.step("boot-test", "Run full QEMU integration boot tests");
     boot_test_step.dependOn(&boot_test_cmd.step);
+
+    // --- ARM64 guest (Phase 1, Gringots/zinux/ARM64_GUEST.md) ---
+    // Minimaalinen `virt`-guesti: boot.S + PL011 + boot-marker + semihost-exit.
+    // x86_64/Limine-polkuun ei kosketa — tämä on rinnakkainen kohde.
+    const aarch64_query: std.Target.Query = .{
+        .cpu_arch = .aarch64,
+        .os_tag = .freestanding,
+        .abi = .none,
+    };
+    const aarch64_target = b.resolveTargetQuery(aarch64_query);
+    const aarch64_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/main.zig"),
+        .target = aarch64_target,
+        // ReleaseSafe freestandingissä (sama syy kuin x86_64: Debug vetää
+        // runtimea jota ei ole).
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+    });
+    aarch64_mod.red_zone = false;
+    aarch64_mod.stack_protector = false;
+    aarch64_mod.single_threaded = true;
+    const aarch64_kernel = b.addExecutable(.{
+        .name = "zinux-aarch64",
+        .root_module = aarch64_mod,
+    });
+    aarch64_kernel.setLinkerScript(b.path("kernel/arch/aarch64/linker.ld"));
+    aarch64_kernel.root_module.addAssemblyFile(b.path("kernel/arch/aarch64/boot.S"));
+    b.installArtifact(aarch64_kernel);
+
+    const aarch64_step = b.step("aarch64", "Build minimal ARM64 guest kernel (ELF)");
+    aarch64_step.dependOn(&aarch64_kernel.step);
+
+    // Asenna ELF vakiopolkuun QEMU-ajoa ja varmenninta varten
+    // (ei koko install-askelta — x86-upotusketju ei kuulu tähän).
+    const install_aarch64 = b.addInstallBinFile(
+        aarch64_kernel.getEmittedBin(),
+        "zinux-aarch64",
+    );
+    // Pelkkä compile-askel ei päivitä zig-out/-tiedostoa — kytke asennus
+    // mukaan, jotta QEMU ajaa aina tuoretta binääriä (stale-ajo debugattu).
+    aarch64_step.dependOn(&install_aarch64.step);
+
+    // QEMU-ajo desktop-referenssissä (suhteellinen polku toimii Linuxissa
+    // ja WSL-bashissa; build-askel ajaa projektin juuresta).
+    // HUOM: ei shell-muuttujia ($LOG, PIPESTATUS) — ne eivät kulje
+    // Windows-bash-shimin läpi; sarja tiedostoon, grep kiinteällä polulla.
+    const qemu_aarch64 = b.addSystemCommand(&.{ "bash", "-c" });
+    qemu_aarch64.setCwd(b.path("."));
+    qemu_aarch64.addArg(
+        \\set -e
+        \\qemu-system-aarch64 \
+        \\  -M virt \
+        \\  -cpu cortex-a72 \
+        \\  -m 512M \
+        \\  -display none \
+        \\  -monitor none \
+        \\  -serial file:zig-out/aarch64-boot.log \
+        \\  -no-reboot \
+        \\  -semihosting-config enable=on,target=native \
+        \\  -kernel zig-out/bin/zinux-aarch64
+        \\cat zig-out/aarch64-boot.log
+        \\grep -q "Zinux ARM64 boot OK" zig-out/aarch64-boot.log || { echo BOOT MARKER MISSING; exit 1; }
+        \\grep -q "zinux>" zig-out/aarch64-boot.log || { echo PROMPT MISSING; exit 1; }
+    );
+    qemu_aarch64.step.dependOn(&install_aarch64.step);
+    const aarch64_run_step = b.step("aarch64-run", "Boot ARM64 guest in QEMU (expects boot marker)");
+    aarch64_run_step.dependOn(&qemu_aarch64.step);
+
+    // ELF-varmennin ilman QEMU:a (portti koneille joissa ei ole QEMU:a).
+    const aarch64_verify_exe = b.addExecutable(.{
+        .name = "zinux-aarch64-verify",
+        .root_module = aarch64_verify_host_mod,
+    });
+    const run_aarch64_verify = b.addRunArtifact(aarch64_verify_exe);
+    run_aarch64_verify.setCwd(b.path("."));
+    run_aarch64_verify.step.dependOn(&install_aarch64.step);
+    const aarch64_verify_step = b.step("aarch64-verify", "Verify ARM64 guest ELF without QEMU");
+    aarch64_verify_step.dependOn(&run_aarch64_verify.step);
 }

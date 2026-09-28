@@ -205,3 +205,8 @@ test {
 test {
     _ = @import("linux_hello_test.zig");
 }
+
+// Tuo ARM64-guest-ytimen host-testit (PL011 + semihosting, Phase 1).
+test {
+    _ = @import("aarch64_uart_test.zig");
+}
