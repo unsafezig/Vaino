@@ -1567,6 +1567,9 @@ pub fn build(b: *std.Build) void {
         \\cat zig-out/aarch64-boot.log
         \\grep -q "Zinux ARM64 boot OK" zig-out/aarch64-boot.log || { echo BOOT MARKER MISSING; exit 1; }
         \\grep -q "zinux>" zig-out/aarch64-boot.log || { echo PROMPT MISSING; exit 1; }
+        \\grep -q "Zinux init EL0" zig-out/aarch64-boot.log || { echo EL0 INIT MISSING; exit 1; }
+        \\grep -q "IPC request/response OK" zig-out/aarch64-boot.log || { echo IPC SMOKE MISSING; exit 1; }
+        \\grep -q "Zinux init exit" zig-out/aarch64-boot.log || { echo INIT EXIT MISSING; exit 1; }
     );
     qemu_aarch64.step.dependOn(&install_aarch64.step);
     const aarch64_run_step = b.step("aarch64-run", "Boot ARM64 guest in QEMU (expects boot marker)");

@@ -10,8 +10,8 @@
 
 // Sarjakonsoli (PL011 UART0 @ 0x0900_0000).
 const uart = @import("uart.zig");
-// QEMU-lopetus semihostingilla (vrt. x86 isa-debug-exit).
 const semihost = @import("semihost.zig");
+const syscall = @import("syscall.zig");
 
 // Deterministinen boot-marker — CI greppaa tämän sarjasta.
 // EI saa muuttaa ilman ARM64_GUEST.md-päivitystä ja CI-sääntömuutosta.
@@ -20,7 +20,7 @@ pub const BOOT_MARKER: []const u8 = "Zinux ARM64 boot OK";
 pub const PROMPT: []const u8 = "zinux>";
 
 // Kernelin pääfunktio — boot.S hyppää tähän EL1:ssä.
-// Ei palaa: smoke-lopetus semihostingilla.
+// Siirtyy aidosti EL0-initiin; initin SYS_EXIT päättää QEMU-smoken.
 export fn aarch64_kmain() callconv(.c) noreturn {
     // Alusta sarjakonsoli ennen ensimmäistä tulostusta.
     uart.init();
@@ -30,12 +30,12 @@ export fn aarch64_kmain() callconv(.c) noreturn {
     uart.line("Target: aarch64 freestanding");
     // Boot valmis — CI smoke-testi etsii tämän merkkijonon sarjasta.
     uart.line(BOOT_MARKER);
-    // Kehotevaraus — init/shell (Phase 2) ottaa tämän haltuun.
+    // Kehote ennen userland-siirtymää säilyy Phase 1 -markerina.
     uart.line(PROMPT);
     // Semihosting-savutesti: osoitinvälitys toimii (SEMI-WRITE0-OK stdoutiin).
     semihost.write0("SEMI-WRITE0-OK\n");
-    // Pysäytä QEMU koodilla 0 — ei timeout-odotusta CI:ssä.
-    semihost.exit(0);
+    // Siirry EL0-initiin. Init päättää tämän guestin SYS_EXITillä.
+    syscall.aarch64_enter_init();
 }
 
 const testing = @import("std").testing;

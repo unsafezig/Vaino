@@ -55,9 +55,63 @@ _start:
     eret
 
 .LinEL1:
+    // ARM64 exception vectors: EL0 SVC requests return through EL1.
+    ldr     x0, =aarch64_vectors
+    msr     vbar_el1, x0
+    isb
     bl      aarch64_kmain
     // kmain never returns; halt if it does.
 .Lhalt:
     wfi
     b       .Lhalt
     .size _start, . - _start
+
+// Enter the embedded init entry at EL0t. SP_EL1 remains the kernel exception
+// stack; SP_EL0 is reserved for the init process.
+    .text
+    .global aarch64_enter_init
+    .type aarch64_enter_init, %function
+aarch64_enter_init:
+    ldr     x0, =init_stack
+    add     x0, x0, #4096
+    msr     sp_el0, x0
+    mov     x0, #0              // EL0t, interrupts enabled for now
+    msr     spsr_el1, x0
+    ldr     x0, =aarch64_init_entry
+    msr     elr_el1, x0
+    eret
+    .size aarch64_enter_init, . - aarch64_enter_init
+
+// VBAR_EL1 vector table. Only the lower-EL AArch64 synchronous vector is
+// active in this milestone; all other entries park safely.
+    .section .text.vectors, "ax"
+    .align 11
+    .global aarch64_vectors
+    .type aarch64_vectors, %function
+aarch64_vectors:
+    .rept 8
+    b .Lvector_park
+    .space 124
+    .endr
+
+    // Vector index 8: synchronous exception from lower EL using AArch64.
+    b .Lvector_lower_sync
+    .space 124
+    .rept 7
+    b .Lvector_park
+    .space 124
+    .endr
+
+.Lvector_lower_sync:
+    // Preserve x1/x2 while x0..x2 become the C handler arguments.
+    stp     x1, x2, [sp, #-16]!
+    mrs     x0, esr_el1
+    mrs     x1, elr_el1
+    mov     x2, x8
+    bl      aarch64_exception_sync
+    ldp     x1, x2, [sp], #16
+    eret
+
+.Lvector_park:
+    wfi
+    b .Lvector_park
