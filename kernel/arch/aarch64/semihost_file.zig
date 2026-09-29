@@ -27,6 +27,8 @@ pub const IO_ERROR: u64 = 2;
 /// Guest-host shim paths, host-relative (repo root in gates).
 pub const TX_PATH: []const u8 = "zig-out/guest-tx.dat";
 pub const RX_PATH: []const u8 = "zig-out/host-rx.dat";
+/// Gringots-owned persistent storage backing file.
+pub const STORE_PATH: []const u8 = "zig-out/gringots-store.dat";
 
 /// Open PATH with MODE. Returns fd (>= 0) or -1.
 pub fn open(path: [*]const u8, path_len: u64, mode: u64) i64 {
@@ -98,4 +100,5 @@ test "semihosting file call numbers match spec" {
 test "shim paths are the gate-relative files" {
     try testing.expectEqualStrings("zig-out/guest-tx.dat", TX_PATH);
     try testing.expectEqualStrings("zig-out/host-rx.dat", RX_PATH);
+    try testing.expectEqualStrings("zig-out/gringots-store.dat", STORE_PATH);
 }

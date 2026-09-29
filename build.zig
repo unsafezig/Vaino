@@ -1340,6 +1340,16 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("aarch64_semihost_file", aarch64_semihost_file_host_mod);
+    // ARM64 guest unit tests that ACTUALLY run (see host_tests.zig: named
+    // module imports do not carry test blocks across the boundary).
+    const aarch64_suite_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/host_tests.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const aarch64_suite_tests = b.addTest(.{
+        .root_module = aarch64_suite_mod,
+    });
     // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
     // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
     const aarch64_verify_host_mod = b.createModule(.{
@@ -1361,6 +1371,7 @@ pub fn build(b: *std.Build) void {
     run_host_tests.dependOn(&b.addRunArtifact(b.addTest(.{
         .root_module = aarch64_verify_host_mod,
     })).step);
+    run_host_tests.dependOn(&b.addRunArtifact(aarch64_suite_tests).step);
 
     // --- Vaihe 32.4 — plugin-install: hae URL:stä + varmenna Ed25519 + asenna ---
     // Käyttö: zig build plugin-install -Dplugin-url=<https|file> -Dplugin-key=<64 hex>

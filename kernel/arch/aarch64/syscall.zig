@@ -11,6 +11,7 @@ const datagram = @import("datagram.zig");
 const shfile = @import("semihost_file.zig");
 const crypto_selftest = @import("gringots/selftest.zig");
 const agent = @import("gringots/agent.zig");
+const service = @import("gringots/service.zig");
 
 pub const Aarch64ExceptionFrame = frame_abi.Aarch64ExceptionFrame;
 
@@ -32,6 +33,8 @@ pub const SYS_DATAGRAM_SYNC_IN: u64 = 14;
 pub const SYS_CRYPTO_SELFTEST: u64 = 15;
 pub const SYS_GRINGOTS_SOS: u64 = 16;
 pub const SYS_GRINGOTS_ACK: u64 = 17;
+pub const SYS_GRINGOTS_STATUS: u64 = 18;
+pub const SYS_GRINGOTS_MINT_UNIQUE: u64 = 19;
 pub const IPC_SMOKE_REQUEST: u64 = 0x49504331; // "IPC1"
 pub const IPC_SMOKE_RESPONSE: u64 = 0x49504332; // "IPC2"
 
@@ -50,12 +53,55 @@ var dgram_buf: [1034]u8 linksection(".bss") = undefined;
 var recv_slot: datagram.Slot linksection(".bss") = undefined;
 var rx_tmp: datagram.Slot linksection(".bss") = undefined;
 var sync_tmp: datagram.Slot linksection(".bss") = undefined;
+var status_a: service.Status linksection(".bss") = undefined;
+var status_b: service.Status linksection(".bss") = undefined;
+var uniq_a: [16]u8 linksection(".bss") = undefined;
+var uniq_b: [16]u8 linksection(".bss") = undefined;
 
 var init_process: process.Process = undefined;
 var hello_process: process.Process = undefined;
 var saved_init_frame: Aarch64ExceptionFrame = undefined;
 
 pub extern fn aarch64_enter_init() callconv(.c) noreturn;
+
+const STORE_PATH_LEN: u64 = shfile.STORE_PATH.len;
+
+fn storeLoad(image: []u8) bool {
+    const fd = shfile.open(shfile.STORE_PATH.ptr, STORE_PATH_LEN, shfile.MODE_R);
+    if (fd < 0) return false;
+    const n = shfile.flen(fd);
+    var ok = false;
+    if (n == 4096) {
+        const dst: [*]u8 = @ptrCast(image.ptr);
+        ok = shfile.readExact(fd, dst, 4096) == shfile.OK;
+    }
+    _ = shfile.close(fd);
+    return ok;
+}
+
+fn storeSave(image: []const u8) bool {
+    const fd = shfile.open(shfile.STORE_PATH.ptr, STORE_PATH_LEN, shfile.MODE_W);
+    if (fd < 0) return false;
+    const src: [*]const u8 = @ptrCast(image.ptr);
+    const ok = shfile.writeAll(fd, src, 4096) == shfile.OK;
+    _ = shfile.close(fd);
+    return ok;
+}
+
+fn storeRead(off: u64, dst: []u8) void {
+    _ = storage.read(off, dst.ptr, @as(u64, @intCast(dst.len)));
+}
+
+fn storeWrite(off: u64, src: []const u8) void {
+    _ = storage.write(off, src.ptr, @as(u64, @intCast(src.len)));
+}
+
+const guest_backend = service.Backend{
+    .read = storeRead,
+    .write = storeWrite,
+    .load = storeLoad,
+    .store = storeSave,
+};
 
 pub fn initProcessRecords() void {
     init_process = .{
@@ -77,6 +123,12 @@ pub fn initProcessRecords() void {
     clock.reset();
     datagram.reset();
     demo_port = 0;
+    // Gringots service state: loads the persisted image when the store
+    // file exists (restart), otherwise starts fresh. Prints only on load
+    // so first-boot output stays stable.
+    if (service.init(guest_backend) == service.INIT_LOADED) {
+        uart.line("store load OK");
+    }
 }
 
 inline fn setUserStack(stack_top: u64) void {
@@ -284,6 +336,32 @@ fn el0GringotsAck() u64 {
     return st;
 }
 
+fn el0Status(out: *service.Status) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_STATUS),
+          [out] "{x1}" (@intFromPtr(out)),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0MintUnique(out: *[16]u8) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_MINT_UNIQUE),
+          [out] "{x1}" (@intFromPtr(out)),
+        : .{ .memory = true });
+    return st;
+}
+
+fn noncesDiffer(a: *const [16]u8, b: *const [16]u8) bool {
+    var i: usize = 0;
+    while (i < 16) : (i += 1) {
+        if (a[i] != b[i]) return true;
+    }
+    return false;
+}
+
 // Ensimmäinen oikea ARM64-userland entry. Se kulkee SVC-rajapinnan kautta.
 pub export fn aarch64_init_entry() callconv(.c) noreturn {
     el0Smoke();
@@ -315,6 +393,14 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
     // Mint SOS first so it sits at TX[0] for the file shim.
     if (el0GringotsSos() != 0) el0Fail();
 
+    // Service stream: two unique mints must differ; status carries bits.
+    if (el0MintUnique(&uniq_a) != 0) el0Fail();
+    if (el0Status(&status_a) != 0) el0Fail();
+    if (el0MintUnique(&uniq_b) != 0) el0Fail();
+    if (el0Status(&status_b) != 0) el0Fail();
+    if (!noncesDiffer(&uniq_a, &uniq_b)) el0Fail();
+    if (status_b.bits & 2 == 0) el0Fail();
+
     // File-shim hop: TX queue -> host file, host reply file -> RX queue.
     // First boot has no reply file (NOT_FOUND is the normal case there).
     if (el0SyncOut() != shfile.OK) el0Fail();
@@ -338,6 +424,9 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
         if (st != shfile.NOT_FOUND) {
             if (st != shfile.OK) el0Fail();
             if (el0GringotsAck() != 0) el0Fail();
+            // Post-ACK status must report acknowledgement.
+            if (el0Status(&status_a) != 0) el0Fail();
+            if (status_a.bits & 1 == 0) el0Fail();
         }
     }
 
@@ -496,10 +585,11 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
             }
         },
         SYS_GRINGOTS_SOS => {
-            // Mint the deterministic demo SOS and queue it as
-            // GUEST_SOS_SEND. The file shim carries TX[0] to the host.
+            // Mint the deterministic demo SOS through the service (recorded
+            // + persisted) and queue it as GUEST_SOS_SEND. The file shim
+            // carries TX[0] to the host.
             var fr: [521]u8 = undefined;
-            const n = agent.mintSos(&fr);
+            const n = service.createDemoSos(&fr);
             if (n == null) {
                 frame.x0 = 1;
             } else {
@@ -514,9 +604,23 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
                 }
             }
         },
+        SYS_GRINGOTS_STATUS => {
+            // Service status through the EL0 out-pointer: bits (bit0 =
+            // acked, bit1 = has SOS) plus the last demo nonce.
+            const out: *service.Status = @ptrFromInt(frame.x1);
+            out.* = service.status();
+            frame.x0 = 0;
+        },
+        SYS_GRINGOTS_MINT_UNIQUE => {
+            // Unique-nonce mint for the service path (not enqueued).
+            const out: *[16]u8 = @ptrFromInt(frame.x1);
+            service.mintUnique(out);
+            frame.x0 = 0;
+        },
         SYS_GRINGOTS_ACK => {
             // Verify one RX datagram as the ACK to our SOS. Strips host
             // framing first: only HOST_FRAME_DELIVER payloads reach Gringots.
+            // Replay + acked flag persist through the service.
             if (datagram.rxDequeue(&rx_tmp) != datagram.OK) {
                 uart.line("ack: no rx");
                 frame.x0 = 1;
@@ -527,7 +631,7 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
                     frame.x0 = 1;
                 } else {
                     const plen = datagram.payloadLen(draw);
-                    const stage = agent.verifyAckStage(rx_tmp.data[6 .. 6 + plen]);
+                    const stage = service.verifyAckFrame(rx_tmp.data[6 .. 6 + plen]);
                     frame.x0 = stage;
                     switch (stage) {
                         agent.ACK_OK => uart.line("ACK OK"),
@@ -611,6 +715,8 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 15), SYS_CRYPTO_SELFTEST);
     try testing.expectEqual(@as(u64, 16), SYS_GRINGOTS_SOS);
     try testing.expectEqual(@as(u64, 17), SYS_GRINGOTS_ACK);
+    try testing.expectEqual(@as(u64, 18), SYS_GRINGOTS_STATUS);
+    try testing.expectEqual(@as(u64, 19), SYS_GRINGOTS_MINT_UNIQUE);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
     try testing.expectEqual(@as(usize, 800), frame_abi.size);
 }

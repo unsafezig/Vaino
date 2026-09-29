@@ -24,6 +24,10 @@ pub fn resetForTests() void {
     seen = .{};
 }
 
+test {
+    _ = @import("replay_cache.zig");
+}
+
 /// Mint the deterministic demo SOS into OUT_FRAME. Returns byte length,
 /// or null on internal failure (never on bad input: inputs are fixed).
 pub fn mintSos(out_frame: []u8) ?usize {
@@ -75,12 +79,18 @@ pub const ACK_REF_MISMATCH: u8 = 5;
 pub const ACK_REPLAY: u8 = 6;
 
 pub fn verifyAckStage(raw: []const u8) u8 {
+    return verifyAckStageCached(raw, &seen);
+}
+
+/// Cache-parameterized variant: the service persists its own ring and
+/// checks against it instead of this module's static.
+pub fn verifyAckStageCached(raw: []const u8, cache: *replay.Cache) u8 {
     if (!has_sos) return ACK_NO_SOS;
     const m = msg.verifyFrame(raw, T0) catch return ACK_BAD_FRAME;
     if (m.msg_type != .ack) return ACK_NOT_ACK;
     const ref = m.ref orelse return ACK_NO_REF;
     if (!eql16(ref, last_sos_nonce)) return ACK_REF_MISMATCH;
-    if (seen.check(m.ephemeral_id, m.nonce, m.expires, T0) != .fresh) return ACK_REPLAY;
+    if (cache.check(m.ephemeral_id, m.nonce, m.expires, T0) != .fresh) return ACK_REPLAY;
     return ACK_OK;
 }
 

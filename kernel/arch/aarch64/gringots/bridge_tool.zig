@@ -151,6 +151,7 @@ const testing = std.testing;
 test {
     _ = @import("agent.zig");
     _ = @import("selftest.zig");
+    _ = @import("service.zig");
 }
 
 test "codec round trip" {

@@ -23,7 +23,7 @@ fn check(offset: u64, len: u64) bool {
     return offset + len <= SIZE;
 }
 
-pub fn write(offset: u64, src: *const u8, len: u64) u64 {
+pub fn write(offset: u64, src: [*]const u8, len: u64) u64 {
     if (!check(offset, len)) return BAD_RANGE;
     const dst: *volatile [4096]u8 = @ptrCast(&region);
     var i: u64 = 0;
@@ -31,7 +31,7 @@ pub fn write(offset: u64, src: *const u8, len: u64) u64 {
     return OK;
 }
 
-pub fn read(offset: u64, dst: *u8, len: u64) u64 {
+pub fn read(offset: u64, dst: [*]u8, len: u64) u64 {
     if (!check(offset, len)) return BAD_RANGE;
     const src: *volatile [4096]u8 = @ptrCast(&region);
     var i: u64 = 0;
@@ -39,19 +39,36 @@ pub fn read(offset: u64, dst: *u8, len: u64) u64 {
     return OK;
 }
 
-// Single scalar accesses: fixed-count byte-shift loops get autovectorized
-// into NEON, which faults while EL1 runs with FP/SIMD disabled.
+// Explicit unrolled volatile bytes: fixed-count shift loops get
+// autovectorized into NEON (faults without FP/SIMD), while a u64 store
+// needs 8-byte alignment the region base does not guarantee on host.
 pub fn writeWord(offset: u64, word: u64) u64 {
     if (!check(offset, 8)) return BAD_RANGE;
-    const dst: *volatile u64 = @ptrFromInt(@intFromPtr(&region) + offset);
-    dst.* = word;
+    const dst: *volatile [4096]u8 = @ptrCast(&region);
+    dst[offset + 0] = @truncate(word);
+    dst[offset + 1] = @truncate(word >> 8);
+    dst[offset + 2] = @truncate(word >> 16);
+    dst[offset + 3] = @truncate(word >> 24);
+    dst[offset + 4] = @truncate(word >> 32);
+    dst[offset + 5] = @truncate(word >> 40);
+    dst[offset + 6] = @truncate(word >> 48);
+    dst[offset + 7] = @truncate(word >> 56);
     return OK;
 }
 
 pub fn readWord(offset: u64, out: *u64) u64 {
     if (!check(offset, 8)) return BAD_RANGE;
-    const src: *volatile u64 = @ptrFromInt(@intFromPtr(&region) + offset);
-    out.* = src.*;
+    const src: *volatile [4096]u8 = @ptrCast(&region);
+    var word: u64 = 0;
+    word |= @as(u64, src[offset + 0]);
+    word |= @as(u64, src[offset + 1]) << 8;
+    word |= @as(u64, src[offset + 2]) << 16;
+    word |= @as(u64, src[offset + 3]) << 24;
+    word |= @as(u64, src[offset + 4]) << 32;
+    word |= @as(u64, src[offset + 5]) << 40;
+    word |= @as(u64, src[offset + 6]) << 48;
+    word |= @as(u64, src[offset + 7]) << 56;
+    out.* = word;
     return OK;
 }
 
@@ -68,9 +85,11 @@ test "out-of-range access fails closed" {
     const testing = @import("std").testing;
     reset();
     var b = [_]u8{1};
-    try testing.expectEqual(BAD_RANGE, write(SIZE, &b, 1));
-    try testing.expectEqual(BAD_RANGE, write(SIZE - 4, &b, 8));
-    try testing.expectEqual(BAD_RANGE, read(SIZE, &b, 1));
+    const bs: [*]u8 = @ptrCast(&b);
+    const cs: [*]const u8 = @ptrCast(&b);
+    try testing.expectEqual(BAD_RANGE, write(SIZE, cs, 1));
+    try testing.expectEqual(BAD_RANGE, write(SIZE - 4, cs, 8));
+    try testing.expectEqual(BAD_RANGE, read(SIZE, bs, 1));
     var w: u64 = 0;
     try testing.expectEqual(BAD_RANGE, readWord(SIZE - 7, &w));
     try testing.expectEqual(BAD_RANGE, writeWord(1 << 40, 0));

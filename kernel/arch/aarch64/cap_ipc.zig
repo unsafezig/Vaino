@@ -65,7 +65,7 @@ pub fn create(rights: u64, out_handle: *u64) u64 {
     return TABLE_FULL;
 }
 
-pub fn send(handle: u64, src: *const u8, len: u64) u64 {
+pub fn send(handle: u64, src: [*]const u8, len: u64) u64 {
     const p = lookup(handle) orelse return BAD_HANDLE;
     if ((p.rights & RIGHT_SEND) == 0) return BAD_RIGHTS;
     if (len > MAX_MSG) return TOO_LARGE;
@@ -92,7 +92,7 @@ pub fn sendWord(handle: u64, word: u64, len: u64) u64 {
     return OK;
 }
 
-pub fn recv(handle: u64, dst: *u8, max: u64, out_len: *u64) u64 {
+pub fn recv(handle: u64, dst: [*]u8, max: u64, out_len: *u64) u64 {
     const p = lookup(handle) orelse return BAD_HANDLE;
     if ((p.rights & RIGHT_RECV) == 0) return BAD_RIGHTS;
     if (p.len == 0) return EMPTY;
@@ -128,10 +128,12 @@ test "create/send/recv round trip" {
     var h: u64 = 99;
     try testing.expectEqual(OK, create(RIGHT_ALL, &h));
     var src = [_]u8{ 1, 2, 3 };
-    try testing.expectEqual(OK, send(h, &src, 3));
+    const sraw: [*]const u8 = @ptrCast(&src);
+    try testing.expectEqual(OK, send(h, sraw, 3));
     var dst = [_]u8{0} ** 8;
+    const draw: [*]u8 = @ptrCast(&dst);
     var n: u64 = 0;
-    try testing.expectEqual(OK, recv(h, &dst, 8, &n));
+    try testing.expectEqual(OK, recv(h, draw, 8, &n));
     try testing.expectEqual(@as(u64, 3), n);
     try testing.expectEqualSlices(u8, src[0..], dst[0..3]);
 }
@@ -140,10 +142,12 @@ test "invalid handles fail closed" {
     const testing = @import("std").testing;
     reset();
     var src = [_]u8{9};
-    try testing.expectEqual(BAD_HANDLE, send(99, &src, 1));
+    const sraw: [*]const u8 = @ptrCast(&src);
+    try testing.expectEqual(BAD_HANDLE, send(99, sraw, 1));
     var dst = [_]u8{0};
+    const draw: [*]u8 = @ptrCast(&dst);
     var n: u64 = 0;
-    try testing.expectEqual(BAD_HANDLE, recv(99, &dst, 1, &n));
+    try testing.expectEqual(BAD_HANDLE, recv(99, draw, 1, &n));
     try testing.expectEqual(BAD_HANDLE, sendWord(99, 1, 1));
     var w: u64 = 0;
     try testing.expectEqual(BAD_HANDLE, recvWord(99, &w, &n));
@@ -157,10 +161,12 @@ test "wrong rights fail closed" {
     try testing.expectEqual(OK, create(RIGHT_SEND, &hs));
     try testing.expectEqual(OK, create(RIGHT_RECV, &hr));
     var dst = [_]u8{0};
+    const draw: [*]u8 = @ptrCast(&dst);
     var n: u64 = 0;
-    try testing.expectEqual(BAD_RIGHTS, recv(hs, &dst, 1, &n));
+    try testing.expectEqual(BAD_RIGHTS, recv(hs, draw, 1, &n));
     var src = [_]u8{7};
-    try testing.expectEqual(BAD_RIGHTS, send(hr, &src, 1));
+    const sraw: [*]const u8 = @ptrCast(&src);
+    try testing.expectEqual(BAD_RIGHTS, send(hr, sraw, 1));
     try testing.expectEqual(BAD_RIGHTS, create(0, &hs));
     try testing.expectEqual(BAD_RIGHTS, create(4, &hs));
 }
@@ -171,12 +177,15 @@ test "oversized and empty messages fail closed" {
     var h: u64 = 0;
     try testing.expectEqual(OK, create(RIGHT_ALL, &h));
     var big = [_]u8{0} ** 300;
-    try testing.expectEqual(TOO_LARGE, send(h, &big, 300));
+    const braw: [*]const u8 = @ptrCast(&big);
+    try testing.expectEqual(TOO_LARGE, send(h, braw, 300));
     try testing.expectEqual(TOO_LARGE, sendWord(h, 0, 9));
     var dst = [_]u8{0} ** 8;
+    const draw: [*]u8 = @ptrCast(&dst);
     var n: u64 = 0;
-    try testing.expectEqual(EMPTY, recv(h, &dst, 8, &n));
+    try testing.expectEqual(EMPTY, recv(h, draw, 8, &n));
     var src = [_]u8{ 1, 2, 3, 4 };
-    try testing.expectEqual(OK, send(h, &src, 4));
-    try testing.expectEqual(TOO_LARGE, recv(h, &dst, 2, &n));
+    const sraw: [*]const u8 = @ptrCast(&src);
+    try testing.expectEqual(OK, send(h, sraw, 4));
+    try testing.expectEqual(TOO_LARGE, recv(h, draw, 2, &n));
 }
