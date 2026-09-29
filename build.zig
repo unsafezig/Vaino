@@ -1328,6 +1328,12 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("aarch64_clock", aarch64_clock_host_mod);
+    const aarch64_datagram_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/datagram.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_datagram", aarch64_datagram_host_mod);
     // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
     // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
     const aarch64_verify_host_mod = b.createModule(.{
@@ -1604,6 +1610,8 @@ pub fn build(b: *std.Build) void {
         \\grep -q "storage OK" zig-out/aarch64-boot.log || { echo STORAGE MISSING; exit 1; }
         \\grep -q "storage reject OK" zig-out/aarch64-boot.log || { echo STORAGE REJECT MISSING; exit 1; }
         \\grep -q "clock OK" zig-out/aarch64-boot.log || { echo CLOCK MISSING; exit 1; }
+        \\grep -q "datagram TX OK" zig-out/aarch64-boot.log || { echo DATAGRAM TX MISSING; exit 1; }
+        \\grep -q "datagram reject OK" zig-out/aarch64-boot.log || { echo DATAGRAM REJECT MISSING; exit 1; }
         \\grep -q "hello service EL0" zig-out/aarch64-boot.log || { echo HELLO START MISSING; exit 1; }
         \\grep -q "hello service done" zig-out/aarch64-boot.log || { echo HELLO DONE MISSING; exit 1; }
         \\grep -q "Zinux init exit" zig-out/aarch64-boot.log || { echo INIT EXIT MISSING; exit 1; }

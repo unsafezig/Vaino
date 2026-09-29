@@ -231,3 +231,7 @@ test {
 test {
     _ = @import("aarch64_clock_test.zig");
 }
+
+test {
+    _ = @import("aarch64_datagram_test.zig");
+}

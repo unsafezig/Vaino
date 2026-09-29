@@ -7,6 +7,7 @@ const process = @import("process.zig");
 const cap_ipc = @import("cap_ipc.zig");
 const storage = @import("storage.zig");
 const clock = @import("clock.zig");
+const datagram = @import("datagram.zig");
 
 pub const Aarch64ExceptionFrame = frame_abi.Aarch64ExceptionFrame;
 
@@ -21,6 +22,8 @@ pub const SYS_STORE_WRITE: u64 = 7;
 pub const SYS_STORE_READ: u64 = 8;
 pub const SYS_CLOCK_MONO: u64 = 9;
 pub const SYS_CLOCK_WALL: u64 = 10;
+pub const SYS_DATAGRAM_SEND: u64 = 11;
+pub const SYS_DATAGRAM_RECV: u64 = 12;
 pub const IPC_SMOKE_REQUEST: u64 = 0x49504331; // "IPC1"
 pub const IPC_SMOKE_RESPONSE: u64 = 0x49504332; // "IPC2"
 
@@ -31,6 +34,13 @@ pub export var hello_stack: [4096]u8 align(16) linksection(".bss") = undefined;
 // Demo-portin kahva initiltä hellolle. Sama fyysinen muisti (MMU pois),
 // joten pelkkä .bss-muuttuja riittää tässä vaiheessa.
 pub var demo_port: u64 linksection(".bss") = 0;
+
+// KiB-luokan puskurit staattisina: pinoalustus (`={0}`-literaali tai
+// ReleaseSafen `undefined`-täyttö) kääntyisi NEON-muistioperaatioiksi,
+// jotka kaatuvat ilman FP/SIMD-tilaa. .bss:n nollaa bootin skalaarisilmukka.
+var dgram_buf: [1034]u8 linksection(".bss") = undefined;
+var recv_slot: datagram.Slot linksection(".bss") = undefined;
+var rx_tmp: datagram.Slot linksection(".bss") = undefined;
 
 var init_process: process.Process = undefined;
 var hello_process: process.Process = undefined;
@@ -56,6 +66,7 @@ pub fn initProcessRecords() void {
     cap_ipc.reset();
     storage.reset();
     clock.reset();
+    datagram.reset();
     demo_port = 0;
 }
 
@@ -198,6 +209,26 @@ fn el0Wall() u64 {
     return st;
 }
 
+fn el0DgramSend(raw: [*]const u8, len: u64) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_DATAGRAM_SEND),
+          [raw] "{x1}" (@intFromPtr(raw)),
+          [len] "{x2}" (len),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0DgramRecv(out: *datagram.Slot, max: u64) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_DATAGRAM_RECV),
+          [out] "{x1}" (@intFromPtr(out)),
+          [max] "{x2}" (max),
+        : .{ .memory = true });
+    return st;
+}
+
 // Ensimmäinen oikea ARM64-userland entry. Se kulkee SVC-rajapinnan kautta.
 pub export fn aarch64_init_entry() callconv(.c) noreturn {
     el0Smoke();
@@ -222,6 +253,19 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
     const t2 = el0Mono();
     if (t2 < t1) el0Fail();
     if (el0Wall() != clock.NOT_READY) el0Fail();
+
+    {
+        // encode() writes every byte SEND reads; RECV fills recv_slot on
+        // success (EMPTY here, so its old contents are never read).
+        if (datagram.encode(0x01, "HELLO-DATAGRAM", &dgram_buf) != datagram.OK) el0Fail();
+        const total: u64 = datagram.HEADER_LEN + 14 + datagram.CRC_LEN;
+        const draw: [*]const u8 = @ptrCast(&dgram_buf);
+        if (el0DgramSend(draw, total) != datagram.OK) el0Fail();
+        if (el0DgramSend(draw, 2000) != datagram.TOO_LARGE) el0Fail();
+        dgram_buf[0] ^= 0xFF;
+        if (el0DgramSend(draw, total) != datagram.BAD_DATAGRAM) el0Fail();
+        if (el0DgramRecv(&recv_slot, datagram.SLOT) != datagram.EMPTY) el0Fail();
+    }
 
     asm volatile ("mov x8, #2; svc #0" ::: .{ .memory = true });
 
@@ -308,6 +352,40 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
             frame.x0 = st;
             if (st == clock.NOT_READY) uart.line("clock OK");
         },
+        SYS_DATAGRAM_SEND => {
+            if (frame.x2 > datagram.SLOT) {
+                frame.x0 = datagram.TOO_LARGE;
+                uart.line("datagram reject OK");
+            } else {
+                const raw: [*]const volatile u8 = @ptrFromInt(frame.x1);
+                const st = datagram.txEnqueue(raw, frame.x2);
+                frame.x0 = st;
+                if (st == datagram.OK) {
+                    uart.line("datagram TX OK");
+                } else {
+                    uart.line("datagram reject OK");
+                }
+            }
+        },
+        SYS_DATAGRAM_RECV => {
+            if (frame.x2 < datagram.SLOT) {
+                frame.x0 = datagram.TOO_LARGE;
+            } else {
+                // Static scratch: a stack Slot would need a KiB init that
+                // vectorizes into NEON. Dequeue fills len + data on
+                // success; EMPTY leaves rx_tmp untouched and unread.
+                const st = datagram.rxDequeue(&rx_tmp);
+                if (st == datagram.OK) {
+                    const out: *datagram.Slot = @ptrFromInt(frame.x1);
+                    var i: u64 = 0;
+                    const dst: [*]volatile u8 = @ptrCast(&out.data);
+                    const s: [*]const volatile u8 = @ptrCast(&rx_tmp.data);
+                    while (i < rx_tmp.len) : (i += 1) dst[i] = s[i];
+                    out.len = rx_tmp.len;
+                }
+                frame.x0 = st;
+            }
+        },
         SYS_START_HELLO => {
             if (init_process.state != .running or hello_process.state != .ready) {
                 uart.line("hello start state invalid");
@@ -351,6 +429,8 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 8), SYS_STORE_READ);
     try testing.expectEqual(@as(u64, 9), SYS_CLOCK_MONO);
     try testing.expectEqual(@as(u64, 10), SYS_CLOCK_WALL);
+    try testing.expectEqual(@as(u64, 11), SYS_DATAGRAM_SEND);
+    try testing.expectEqual(@as(u64, 12), SYS_DATAGRAM_RECV);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
     try testing.expectEqual(@as(usize, 272), frame_abi.size);
 }

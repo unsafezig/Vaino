@@ -47,6 +47,11 @@ _start:
     // EL2 -> EL1: EL1 is AArch64 (HCR_EL2.RW = bit 31).
     movz    x0, #0x8000, lsl #16
     msr     hcr_el2, x0
+    // Do not trap EL1/EL0 FP/SIMD to EL2 (CPTR_EL2.TFP = bit 10).
+    // Without this, any compiler-emitted NEON faults as Undefined.
+    mrs     x0, cptr_el2
+    bic     x0, x0, #0x400
+    msr     cptr_el2, x0
     // SPSR_EL2: all masks set + EL1h mode (0x3C5).
     mov     x0, #0x3c5
     msr     spsr_el2, x0
@@ -55,6 +60,15 @@ _start:
     eret
 
 .LinEL1:
+    // Enable EL1/EL0 FP/SIMD (CPACR_EL1.FPEN = bits 21:20 = 0b11).
+    // The guest runs compiler-generated Zig everywhere; scalar-only
+    // codegen cannot be enforced, so the FPU is enabled rather than
+    // trapped. FP context save/restore across service switches is a
+    // later phase (no switch preserves q-regs yet).
+    mrs     x0, cpacr_el1
+    orr     x0, x0, #0x300000
+    msr     cpacr_el1, x0
+    isb
     // ARM64 exception vectors: EL0 SVC requests return through EL1.
     ldr     x0, =aarch64_vectors
     msr     vbar_el1, x0
