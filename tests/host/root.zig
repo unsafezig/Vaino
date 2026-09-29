@@ -215,3 +215,19 @@ test {
 test {
     _ = @import("aarch64_exception_frame_test.zig");
 }
+
+test {
+    _ = @import("aarch64_process_test.zig");
+}
+
+test {
+    _ = @import("aarch64_cap_ipc_test.zig");
+}
+
+test {
+    _ = @import("aarch64_storage_test.zig");
+}
+
+test {
+    _ = @import("aarch64_clock_test.zig");
+}

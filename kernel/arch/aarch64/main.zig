@@ -34,6 +34,7 @@ export fn aarch64_kmain() callconv(.c) noreturn {
     uart.line(PROMPT);
     // Semihosting-savutesti: osoitinvälitys toimii (SEMI-WRITE0-OK stdoutiin).
     semihost.write0("SEMI-WRITE0-OK\n");
+    syscall.initProcessRecords();
     // Siirry EL0-initiin. Init päättää tämän guestin SYS_EXITillä.
     syscall.aarch64_enter_init();
 }

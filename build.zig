@@ -1304,6 +1304,30 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("aarch64_exception_frame", aarch64_exception_frame_host_mod);
+    const aarch64_process_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/process.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_process", aarch64_process_host_mod);
+    const aarch64_cap_ipc_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/cap_ipc.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_cap_ipc", aarch64_cap_ipc_host_mod);
+    const aarch64_storage_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/storage.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_storage", aarch64_storage_host_mod);
+    const aarch64_clock_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/clock.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_clock", aarch64_clock_host_mod);
     // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
     // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
     const aarch64_verify_host_mod = b.createModule(.{
@@ -1575,6 +1599,13 @@ pub fn build(b: *std.Build) void {
         \\grep -q "zinux>" zig-out/aarch64-boot.log || { echo PROMPT MISSING; exit 1; }
         \\grep -q "Zinux init EL0" zig-out/aarch64-boot.log || { echo EL0 INIT MISSING; exit 1; }
         \\grep -q "IPC request/response OK" zig-out/aarch64-boot.log || { echo IPC SMOKE MISSING; exit 1; }
+        \\grep -q "IPC port OK" zig-out/aarch64-boot.log || { echo IPC PORT MISSING; exit 1; }
+        \\grep -q "IPC port reject OK" zig-out/aarch64-boot.log || { echo IPC REJECT MISSING; exit 1; }
+        \\grep -q "storage OK" zig-out/aarch64-boot.log || { echo STORAGE MISSING; exit 1; }
+        \\grep -q "storage reject OK" zig-out/aarch64-boot.log || { echo STORAGE REJECT MISSING; exit 1; }
+        \\grep -q "clock OK" zig-out/aarch64-boot.log || { echo CLOCK MISSING; exit 1; }
+        \\grep -q "hello service EL0" zig-out/aarch64-boot.log || { echo HELLO START MISSING; exit 1; }
+        \\grep -q "hello service done" zig-out/aarch64-boot.log || { echo HELLO DONE MISSING; exit 1; }
         \\grep -q "Zinux init exit" zig-out/aarch64-boot.log || { echo INIT EXIT MISSING; exit 1; }
     );
     qemu_aarch64.step.dependOn(&install_aarch64.step);
