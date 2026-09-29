@@ -1298,6 +1298,12 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("aarch64_semihost", aarch64_semihost_host_mod);
+    const aarch64_exception_frame_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/exception_frame.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_exception_frame", aarch64_exception_frame_host_mod);
     // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
     // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
     const aarch64_verify_host_mod = b.createModule(.{

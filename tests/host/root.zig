@@ -210,3 +210,8 @@ test {
 test {
     _ = @import("aarch64_uart_test.zig");
 }
+
+// Tuo ARM64-poikkeuskehyksen offset-testit (Phase 2 syscall ABI).
+test {
+    _ = @import("aarch64_exception_frame_test.zig");
+}
