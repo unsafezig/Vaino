@@ -1334,6 +1334,12 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("aarch64_datagram", aarch64_datagram_host_mod);
+    const aarch64_semihost_file_host_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/semihost_file.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_test_mod.addImport("aarch64_semihost_file", aarch64_semihost_file_host_mod);
     // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
     // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
     const aarch64_verify_host_mod = b.createModule(.{
@@ -1590,6 +1596,7 @@ pub fn build(b: *std.Build) void {
     qemu_aarch64.setCwd(b.path("."));
     qemu_aarch64.addArg(
         \\set -e
+        \\rm -f zig-out/host-rx.dat
         \\qemu-system-aarch64 \
         \\  -M virt \
         \\  -cpu cortex-a72 \
@@ -1612,6 +1619,7 @@ pub fn build(b: *std.Build) void {
         \\grep -q "clock OK" zig-out/aarch64-boot.log || { echo CLOCK MISSING; exit 1; }
         \\grep -q "datagram TX OK" zig-out/aarch64-boot.log || { echo DATAGRAM TX MISSING; exit 1; }
         \\grep -q "datagram reject OK" zig-out/aarch64-boot.log || { echo DATAGRAM REJECT MISSING; exit 1; }
+        \\grep -q "bridge TX file OK" zig-out/aarch64-boot.log || { echo BRIDGE TX MISSING; exit 1; }
         \\grep -q "hello service EL0" zig-out/aarch64-boot.log || { echo HELLO START MISSING; exit 1; }
         \\grep -q "hello service done" zig-out/aarch64-boot.log || { echo HELLO DONE MISSING; exit 1; }
         \\grep -q "Zinux init exit" zig-out/aarch64-boot.log || { echo INIT EXIT MISSING; exit 1; }
@@ -1630,4 +1638,67 @@ pub fn build(b: *std.Build) void {
     run_aarch64_verify.step.dependOn(&install_aarch64.step);
     const aarch64_verify_step = b.step("aarch64-verify", "Verify ARM64 guest ELF without QEMU");
     aarch64_verify_step.dependOn(&run_aarch64_verify.step);
+
+    // --- File-shim-silta (Phase 4 setup): guest TX-tiedosto -> vastaus ----
+    // Sama moduuli exelle ja testeille (kahdessa moduulissa sama
+    // juuritiedosto on Zig 0.16:ssa virhe).
+    const shim_mod = b.createModule(.{
+        .root_source_file = b.path("tools/datagram_shim.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const shim_tests = b.addTest(.{ .root_module = shim_mod });
+    run_host_tests.dependOn(&b.addRunArtifact(shim_tests).step);
+    const shim_exe = b.addExecutable(.{
+        .name = "zinux-datagram-shim",
+        .root_module = shim_mod,
+    });
+
+    // Boot 1: kirjoita TX-tiedosto (ei RX-tiedostoa -> SYNC_IN on NOT_FOUND).
+    const bridge_run1 = b.addSystemCommand(&.{ "bash", "-c" });
+    bridge_run1.setCwd(b.path("."));
+    bridge_run1.addArg(
+        \\set -e
+        \\rm -f zig-out/host-rx.dat zig-out/guest-tx.dat
+        \\qemu-system-aarch64 \
+        \\  -M virt \
+        \\  -cpu cortex-a72 \
+        \\  -m 512M \
+        \\  -display none \
+        \\  -monitor none \
+        \\  -serial file:zig-out/aarch64-boot.log \
+        \\  -no-reboot \
+        \\  -semihosting-config enable=on,target=native \
+        \\  -kernel zig-out/bin/zinux-aarch64
+        \\grep -q "bridge TX file OK" zig-out/aarch64-boot.log || { echo BRIDGE TX MISSING; exit 1; }
+        \\test -f zig-out/guest-tx.dat || { echo TX FILE MISSING; exit 1; }
+    );
+    bridge_run1.step.dependOn(&install_aarch64.step);
+    // Shim: validoi TX-kehys, kirjoita CAN-vastaus.
+    const run_shim = b.addRunArtifact(shim_exe);
+    run_shim.setCwd(b.path("."));
+    run_shim.step.dependOn(&bridge_run1.step);
+    // Boot 2: guest lukee vastauksen ja validoi sen.
+    const bridge_run2 = b.addSystemCommand(&.{ "bash", "-c" });
+    bridge_run2.setCwd(b.path("."));
+    bridge_run2.addArg(
+        \\set -e
+        \\test -f zig-out/host-rx.dat || { echo RX FILE MISSING; exit 1; }
+        \\qemu-system-aarch64 \
+        \\  -M virt \
+        \\  -cpu cortex-a72 \
+        \\  -m 512M \
+        \\  -display none \
+        \\  -monitor none \
+        \\  -serial file:zig-out/aarch64-bridge.log \
+        \\  -no-reboot \
+        \\  -semihosting-config enable=on,target=native \
+        \\  -kernel zig-out/bin/zinux-aarch64
+        \\cat zig-out/aarch64-bridge.log
+        \\grep -q "bridge RX file OK" zig-out/aarch64-bridge.log || { echo BRIDGE RX MISSING; exit 1; }
+        \\grep -q "Zinux init exit" zig-out/aarch64-bridge.log || { echo INIT EXIT MISSING; exit 1; }
+    );
+    bridge_run2.step.dependOn(&run_shim.step);
+    const aarch64_bridge_step = b.step("aarch64-bridge", "Guest TX file -> shim reply -> guest RX validation");
+    aarch64_bridge_step.dependOn(&bridge_run2.step);
 }

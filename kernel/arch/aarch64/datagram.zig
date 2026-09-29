@@ -143,6 +143,15 @@ pub fn txEnqueue(raw: [*]const volatile u8, len: u64) u64 {
     return OK;
 }
 
+/// Copy the oldest TX entry without consuming (file-shim peek).
+pub fn txFront(out: *Slot) u64 {
+    if (tx_count == 0) return EMPTY;
+    const src = &tx[tx_head % DEPTH];
+    const s: [*]const volatile u8 = @ptrCast(&src.data);
+    copySlot(out, s, src.len);
+    return OK;
+}
+
 pub fn rxDequeue(out: *Slot) u64 {
     if (rx_count == 0) return EMPTY;
     const src = &rx[rx_head % DEPTH];

@@ -8,6 +8,7 @@ const cap_ipc = @import("cap_ipc.zig");
 const storage = @import("storage.zig");
 const clock = @import("clock.zig");
 const datagram = @import("datagram.zig");
+const shfile = @import("semihost_file.zig");
 
 pub const Aarch64ExceptionFrame = frame_abi.Aarch64ExceptionFrame;
 
@@ -24,6 +25,8 @@ pub const SYS_CLOCK_MONO: u64 = 9;
 pub const SYS_CLOCK_WALL: u64 = 10;
 pub const SYS_DATAGRAM_SEND: u64 = 11;
 pub const SYS_DATAGRAM_RECV: u64 = 12;
+pub const SYS_DATAGRAM_SYNC_OUT: u64 = 13;
+pub const SYS_DATAGRAM_SYNC_IN: u64 = 14;
 pub const IPC_SMOKE_REQUEST: u64 = 0x49504331; // "IPC1"
 pub const IPC_SMOKE_RESPONSE: u64 = 0x49504332; // "IPC2"
 
@@ -41,6 +44,7 @@ pub var demo_port: u64 linksection(".bss") = 0;
 var dgram_buf: [1034]u8 linksection(".bss") = undefined;
 var recv_slot: datagram.Slot linksection(".bss") = undefined;
 var rx_tmp: datagram.Slot linksection(".bss") = undefined;
+var sync_tmp: datagram.Slot linksection(".bss") = undefined;
 
 var init_process: process.Process = undefined;
 var hello_process: process.Process = undefined;
@@ -229,6 +233,26 @@ fn el0DgramRecv(out: *datagram.Slot, max: u64) u64 {
     return st;
 }
 
+fn el0SyncOut() u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_DATAGRAM_SYNC_OUT),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0SyncIn() u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_DATAGRAM_SYNC_IN),
+        : .{ .memory = true });
+    return st;
+}
+
+// Canned host reply the file-shim writes (tools/datagram_shim.zig).
+// EL0 verifies the full RX datagram against it.
+const BRIDGE_REPLY = "BRIDGE-REPLY-01";
+
 // Ensimmäinen oikea ARM64-userland entry. Se kulkee SVC-rajapinnan kautta.
 pub export fn aarch64_init_entry() callconv(.c) noreturn {
     el0Smoke();
@@ -265,6 +289,24 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
         dgram_buf[0] ^= 0xFF;
         if (el0DgramSend(draw, total) != datagram.BAD_DATAGRAM) el0Fail();
         if (el0DgramRecv(&recv_slot, datagram.SLOT) != datagram.EMPTY) el0Fail();
+    }
+
+    // File-shim hop: TX queue -> host file, host reply file -> RX queue.
+    // First boot has no reply file (NOT_FOUND is the normal case there).
+    if (el0SyncOut() != shfile.OK) el0Fail();
+    {
+        const st = el0SyncIn();
+        if (st != shfile.NOT_FOUND) {
+            if (st != shfile.OK) el0Fail();
+            if (el0DgramRecv(&recv_slot, datagram.SLOT) != datagram.OK) el0Fail();
+            const want: u64 = datagram.HEADER_LEN + BRIDGE_REPLY.len + datagram.CRC_LEN;
+            if (recv_slot.len != want) el0Fail();
+            if (recv_slot.data[3] != 0x02) el0Fail();
+            var i: usize = 0;
+            while (i < BRIDGE_REPLY.len) : (i += 1) {
+                if (recv_slot.data[6 + i] != BRIDGE_REPLY[i]) el0Fail();
+            }
+        }
     }
 
     asm volatile ("mov x8, #2; svc #0" ::: .{ .memory = true });
@@ -367,6 +409,50 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
                 }
             }
         },
+        SYS_DATAGRAM_SYNC_OUT => {
+            // Peek TX front and spill it to the host file. No dequeue:
+            // the queue stays intact for inspection across boots.
+            if (datagram.txFront(&sync_tmp) != datagram.OK) {
+                frame.x0 = datagram.EMPTY;
+            } else {
+                const tx_len: u64 = @intCast(shfile.TX_PATH.len);
+                const fd = shfile.open(shfile.TX_PATH.ptr, tx_len, shfile.MODE_W);
+                var rc: u64 = shfile.IO_ERROR;
+                if (fd >= 0) {
+                    const s: [*]const u8 = @ptrCast(&sync_tmp.data);
+                    rc = shfile.writeAll(fd, s, sync_tmp.len);
+                    _ = shfile.close(fd);
+                }
+                frame.x0 = rc;
+                if (rc == shfile.OK) uart.line("bridge TX file OK");
+            }
+        },
+        SYS_DATAGRAM_SYNC_IN => {
+            const rx_len: u64 = @intCast(shfile.RX_PATH.len);
+            const fd = shfile.open(shfile.RX_PATH.ptr, rx_len, shfile.MODE_R);
+            if (fd < 0) {
+                // Normal on first boot: the host has not replied yet.
+                frame.x0 = shfile.NOT_FOUND;
+            } else {
+                var rc: u64 = shfile.IO_ERROR;
+                const n = shfile.flen(fd);
+                if (n >= 0) {
+                    const un: u64 = @intCast(n);
+                    if (un > datagram.SLOT) {
+                        rc = datagram.TOO_LARGE;
+                    } else {
+                        const dst: [*]u8 = @ptrCast(&sync_tmp.data);
+                        if (shfile.readExact(fd, dst, un) == shfile.OK) {
+                            const s: [*]const volatile u8 = @ptrCast(&sync_tmp.data);
+                            rc = datagram.rxInject(s, un);
+                        }
+                    }
+                }
+                _ = shfile.close(fd);
+                frame.x0 = rc;
+                if (rc == shfile.OK) uart.line("bridge RX file OK");
+            }
+        },
         SYS_DATAGRAM_RECV => {
             if (frame.x2 < datagram.SLOT) {
                 frame.x0 = datagram.TOO_LARGE;
@@ -431,6 +517,8 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 10), SYS_CLOCK_WALL);
     try testing.expectEqual(@as(u64, 11), SYS_DATAGRAM_SEND);
     try testing.expectEqual(@as(u64, 12), SYS_DATAGRAM_RECV);
+    try testing.expectEqual(@as(u64, 13), SYS_DATAGRAM_SYNC_OUT);
+    try testing.expectEqual(@as(u64, 14), SYS_DATAGRAM_SYNC_IN);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
     try testing.expectEqual(@as(usize, 272), frame_abi.size);
 }

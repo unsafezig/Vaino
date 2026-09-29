@@ -235,3 +235,7 @@ test {
 test {
     _ = @import("aarch64_datagram_test.zig");
 }
+
+test {
+    _ = @import("aarch64_semihost_file_test.zig");
+}
