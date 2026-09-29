@@ -9,6 +9,7 @@ const storage = @import("storage.zig");
 const clock = @import("clock.zig");
 const datagram = @import("datagram.zig");
 const shfile = @import("semihost_file.zig");
+const crypto_selftest = @import("gringots/selftest.zig");
 
 pub const Aarch64ExceptionFrame = frame_abi.Aarch64ExceptionFrame;
 
@@ -27,6 +28,7 @@ pub const SYS_DATAGRAM_SEND: u64 = 11;
 pub const SYS_DATAGRAM_RECV: u64 = 12;
 pub const SYS_DATAGRAM_SYNC_OUT: u64 = 13;
 pub const SYS_DATAGRAM_SYNC_IN: u64 = 14;
+pub const SYS_CRYPTO_SELFTEST: u64 = 15;
 pub const IPC_SMOKE_REQUEST: u64 = 0x49504331; // "IPC1"
 pub const IPC_SMOKE_RESPONSE: u64 = 0x49504332; // "IPC2"
 
@@ -117,6 +119,12 @@ inline fn copyFrame(dst: *volatile Aarch64ExceptionFrame, src: *const volatile A
     dst.esr_el1 = src.esr_el1;
     dst.elr_el1 = src.elr_el1;
     dst.spsr_el1 = src.spsr_el1;
+    // FP state follows the service across the hello handoff (FP is
+    // enabled guest-wide; the vector preserves q-regs around SVC).
+    var qi: usize = 0;
+    while (qi < 32) : (qi += 1) dst.q[qi] = src.q[qi];
+    dst.fpcr = src.fpcr;
+    dst.fpsr = src.fpsr;
 }
 
 // EL0-demo: kiinteät 8-tavuiset tunnisteet capability-, storage- ja
@@ -249,6 +257,14 @@ fn el0SyncIn() u64 {
     return st;
 }
 
+fn el0CryptoSelftest() u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_CRYPTO_SELFTEST),
+        : .{ .memory = true });
+    return st;
+}
+
 // Canned host reply the file-shim writes (tools/datagram_shim.zig).
 // EL0 verifies the full RX datagram against it.
 const BRIDGE_REPLY = "BRIDGE-REPLY-01";
@@ -290,6 +306,9 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
         if (el0DgramSend(draw, total) != datagram.BAD_DATAGRAM) el0Fail();
         if (el0DgramRecv(&recv_slot, datagram.SLOT) != datagram.EMPTY) el0Fail();
     }
+
+    // On-target Gringots crypto must pass before any service may use it.
+    if (el0CryptoSelftest() != 0) el0Fail();
 
     // File-shim hop: TX queue -> host file, host reply file -> RX queue.
     // First boot has no reply file (NOT_FOUND is the normal case there).
@@ -453,6 +472,16 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
                 if (rc == shfile.OK) uart.line("bridge RX file OK");
             }
         },
+        SYS_CRYPTO_SELFTEST => {
+            // Runs the RFC 8032 + SOS self-test on target (EL1). Prints
+            // only on success; EL0 treats any nonzero status as fatal.
+            if (crypto_selftest.run()) {
+                uart.line("crypto OK");
+                frame.x0 = 0;
+            } else {
+                frame.x0 = 1;
+            }
+        },
         SYS_DATAGRAM_RECV => {
             if (frame.x2 < datagram.SLOT) {
                 frame.x0 = datagram.TOO_LARGE;
@@ -519,6 +548,7 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 12), SYS_DATAGRAM_RECV);
     try testing.expectEqual(@as(u64, 13), SYS_DATAGRAM_SYNC_OUT);
     try testing.expectEqual(@as(u64, 14), SYS_DATAGRAM_SYNC_IN);
+    try testing.expectEqual(@as(u64, 15), SYS_CRYPTO_SELFTEST);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
-    try testing.expectEqual(@as(usize, 272), frame_abi.size);
+    try testing.expectEqual(@as(usize, 800), frame_abi.size);
 }

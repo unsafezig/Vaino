@@ -239,3 +239,7 @@ test {
 test {
     _ = @import("aarch64_semihost_file_test.zig");
 }
+
+test {
+    _ = @import("aarch64_gringots_test.zig");
+}

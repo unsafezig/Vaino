@@ -117,9 +117,10 @@ aarch64_vectors:
     .endr
 
 .Lvector_lower_sync:
-    // Aarch64ExceptionFrame: x0-x30, ESR_EL1, ELR_EL1, SPSR_EL1 (272 B).
+    // Aarch64ExceptionFrame: x0-x30, ESR/ELR/SPSR_EL1 (272 B) + q0-q31
+    // (512 B) + FPCR/FPSR (16 B) = 800 B, 16-aligned.
     // Keep this in lockstep with exception_frame.zig and its offset test.
-    sub     sp, sp, #272
+    sub     sp, sp, #800
     stp     x0, x1, [sp, #0]
     stp     x2, x3, [sp, #16]
     stp     x4, x5, [sp, #32]
@@ -142,9 +143,35 @@ aarch64_vectors:
     str     x9, [sp, #256]
     mrs     x9, spsr_el1
     str     x9, [sp, #264]
+    stp     q0, q1, [sp, #272]
+    stp     q2, q3, [sp, #304]
+    stp     q4, q5, [sp, #336]
+    stp     q6, q7, [sp, #368]
+    stp     q8, q9, [sp, #400]
+    stp     q10, q11, [sp, #432]
+    stp     q12, q13, [sp, #464]
+    stp     q14, q15, [sp, #496]
+    stp     q16, q17, [sp, #528]
+    stp     q18, q19, [sp, #560]
+    stp     q20, q21, [sp, #592]
+    stp     q22, q23, [sp, #624]
+    stp     q24, q25, [sp, #656]
+    stp     q26, q27, [sp, #688]
+    stp     q28, q29, [sp, #720]
+    stp     q30, q31, [sp, #752]
+    mrs     x9, fpcr
+    str     x9, [sp, #784]
+    mrs     x9, fpsr
+    str     x9, [sp, #792]
 
     mov     x0, sp
     bl      aarch64_exception_sync
+    // Control regs first: x9 is scratch here and gets its genuine value
+    // back from the frame with the other x-regs below.
+    ldr     x9, [sp, #784]
+    msr     fpcr, x9
+    ldr     x9, [sp, #792]
+    msr     fpsr, x9
     ldr     x9, [sp, #256]
     msr     elr_el1, x9
     ldr     x9, [sp, #264]
@@ -165,7 +192,23 @@ aarch64_vectors:
     ldp     x26, x27, [sp, #208]
     ldp     x28, x29, [sp, #224]
     ldr     x30, [sp, #240]
-    add     sp, sp, #272
+    ldp     q0, q1, [sp, #272]
+    ldp     q2, q3, [sp, #304]
+    ldp     q4, q5, [sp, #336]
+    ldp     q6, q7, [sp, #368]
+    ldp     q8, q9, [sp, #400]
+    ldp     q10, q11, [sp, #432]
+    ldp     q12, q13, [sp, #464]
+    ldp     q14, q15, [sp, #496]
+    ldp     q16, q17, [sp, #528]
+    ldp     q18, q19, [sp, #560]
+    ldp     q20, q21, [sp, #592]
+    ldp     q22, q23, [sp, #624]
+    ldp     q24, q25, [sp, #656]
+    ldp     q26, q27, [sp, #688]
+    ldp     q28, q29, [sp, #720]
+    ldp     q30, q31, [sp, #752]
+    add     sp, sp, #800
     eret
 
 .Lvector_park:

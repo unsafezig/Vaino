@@ -1,4 +1,8 @@
 //! ABI shared by the EL0 synchronous vector and the ARM64 syscall dispatcher.
+//!
+//! The frame preserves the full user integer context plus the FP/SIMD
+//! context (q0-q31, FPCR/FPSR). The vector owns save/restore; the Zig
+//! dispatcher only touches x0/x8/ELR/SPSR through this struct.
 
 pub const Aarch64ExceptionFrame = extern struct {
     x0: u64,
@@ -35,6 +39,10 @@ pub const Aarch64ExceptionFrame = extern struct {
     esr_el1: u64,
     elr_el1: u64,
     spsr_el1: u64,
+    /// FP/SIMD registers q0-q31 as u64 pairs (little-endian lanes).
+    q: [32][2]u64,
+    fpcr: u64,
+    fpsr: u64,
 };
 
 pub const x0_offset = @offsetOf(Aarch64ExceptionFrame, "x0");
@@ -43,6 +51,10 @@ pub const x30_offset = @offsetOf(Aarch64ExceptionFrame, "x30");
 pub const esr_el1_offset = @offsetOf(Aarch64ExceptionFrame, "esr_el1");
 pub const elr_el1_offset = @offsetOf(Aarch64ExceptionFrame, "elr_el1");
 pub const spsr_el1_offset = @offsetOf(Aarch64ExceptionFrame, "spsr_el1");
+pub const q_offset = @offsetOf(Aarch64ExceptionFrame, "q");
+pub const q31_offset = q_offset + 31 * 16;
+pub const fpcr_offset = @offsetOf(Aarch64ExceptionFrame, "fpcr");
+pub const fpsr_offset = @offsetOf(Aarch64ExceptionFrame, "fpsr");
 pub const size = @sizeOf(Aarch64ExceptionFrame);
 
 test "exception frame offsets match the vector ABI" {
@@ -53,6 +65,9 @@ test "exception frame offsets match the vector ABI" {
     try testing.expectEqual(@as(usize, 248), esr_el1_offset);
     try testing.expectEqual(@as(usize, 256), elr_el1_offset);
     try testing.expectEqual(@as(usize, 264), spsr_el1_offset);
-    try testing.expectEqual(@as(usize, 272), size);
-    try testing.expectEqual(@as(usize, 16), @alignOf(Aarch64ExceptionFrame));
+    try testing.expectEqual(@as(usize, 272), q_offset);
+    try testing.expectEqual(@as(usize, 272 + 31 * 16), q31_offset);
+    try testing.expectEqual(@as(usize, 784), fpcr_offset);
+    try testing.expectEqual(@as(usize, 792), fpsr_offset);
+    try testing.expectEqual(@as(usize, 800), size);
 }
