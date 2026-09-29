@@ -35,6 +35,13 @@ pub const SYS_GRINGOTS_SOS: u64 = 16;
 pub const SYS_GRINGOTS_ACK: u64 = 17;
 pub const SYS_GRINGOTS_STATUS: u64 = 18;
 pub const SYS_GRINGOTS_MINT_UNIQUE: u64 = 19;
+pub const SYS_GRINGOTS_VERIFY: u64 = 20;
+pub const SYS_GRINGOTS_DESCRIBE: u64 = 21;
+pub const SYS_GRINGOTS_SEND: u64 = 22;
+
+/// Shared EL0/kernel out-structs (single x0 status + memory results).
+pub const SosOut = struct { len: u64, frame: [521]u8 };
+pub const DescOut = struct { len: u64, text: [512]u8 };
 pub const IPC_SMOKE_REQUEST: u64 = 0x49504331; // "IPC1"
 pub const IPC_SMOKE_RESPONSE: u64 = 0x49504332; // "IPC2"
 
@@ -57,6 +64,8 @@ var status_a: service.Status linksection(".bss") = undefined;
 var status_b: service.Status linksection(".bss") = undefined;
 var uniq_a: [16]u8 linksection(".bss") = undefined;
 var uniq_b: [16]u8 linksection(".bss") = undefined;
+var sos_out: SosOut linksection(".bss") = undefined;
+var desc_out: DescOut linksection(".bss") = undefined;
 
 var init_process: process.Process = undefined;
 var hello_process: process.Process = undefined;
@@ -320,10 +329,43 @@ fn el0CryptoSelftest() u64 {
     return st;
 }
 
-fn el0GringotsSos() u64 {
+fn el0GringotsSos(out: *SosOut, max: u64) u64 {
     const st: u64 = asm volatile ("svc #0"
         : [st] "={x0}" (-> u64),
         : [nr] "{x8}" (SYS_GRINGOTS_SOS),
+          [out] "{x1}" (@intFromPtr(out)),
+          [max] "{x2}" (max),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0Verify(raw: [*]const u8, len: u64) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_VERIFY),
+          [raw] "{x1}" (@intFromPtr(raw)),
+          [len] "{x2}" (len),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0Describe(raw: [*]const u8, len: u64, out: *DescOut) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_DESCRIBE),
+          [raw] "{x1}" (@intFromPtr(raw)),
+          [len] "{x2}" (len),
+          [out] "{x3}" (@intFromPtr(out)),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0SendFrame(raw: [*]const u8, len: u64) u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_SEND),
+          [raw] "{x1}" (@intFromPtr(raw)),
+          [len] "{x2}" (len),
         : .{ .memory = true });
     return st;
 }
@@ -391,7 +433,26 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
     if (el0CryptoSelftest() != 0) el0Fail();
 
     // Mint SOS first so it sits at TX[0] for the file shim.
-    if (el0GringotsSos() != 0) el0Fail();
+    if (el0GringotsSos(&sos_out, 521) != 0) el0Fail();
+    {
+        // VERIFY / DESCRIBE / SEND against our own SOS bytes.
+        const sos: [*]const u8 = @ptrCast(&sos_out.frame);
+        if (el0Verify(sos, sos_out.len) != agent.V_OK) el0Fail();
+        // Corrupted copy must not verify (CRC covers exact bytes).
+        var i: usize = 0;
+        while (i < sos_out.len) : (i += 1) dgram_buf[i] = sos_out.frame[i];
+        dgram_buf[10] ^= 0x01;
+        const bad: [*]const u8 = @ptrCast(&dgram_buf);
+        if (el0Verify(bad, sos_out.len) == agent.V_OK) el0Fail();
+        if (el0Describe(sos, sos_out.len, &desc_out) != 0) el0Fail();
+        const want_prefix = "GRINGOTTS/1";
+        var pi: usize = 0;
+        while (pi < want_prefix.len) : (pi += 1) {
+            if (desc_out.text[pi] != want_prefix[pi]) el0Fail();
+        }
+        if (el0SendFrame(sos, sos_out.len) != 0) el0Fail();
+        if (el0SendFrame(sos, 0) == 0) el0Fail();
+    }
 
     // Service stream: two unique mints must differ; status carries bits.
     if (el0MintUnique(&uniq_a) != 0) el0Fail();
@@ -586,21 +647,61 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
         },
         SYS_GRINGOTS_SOS => {
             // Mint the deterministic demo SOS through the service (recorded
-            // + persisted) and queue it as GUEST_SOS_SEND. The file shim
-            // carries TX[0] to the host.
-            var fr: [521]u8 = undefined;
-            const n = service.createDemoSos(&fr);
+            // + persisted), hand the bytes to EL0, and queue them as
+            // GUEST_SOS_SEND. The file shim carries TX[0] to the host.
+            const out: *SosOut = @ptrFromInt(frame.x1);
+            if (frame.x2 < 521) {
+                frame.x0 = 2;
+            } else {
+                var fr: [521]u8 = undefined;
+                const n = service.createDemoSos(&fr);
+                if (n == null) {
+                    frame.x0 = 1;
+                } else {
+                    var i: usize = 0;
+                    while (i < n.?) : (i += 1) out.frame[i] = fr[i];
+                    out.len = n.?;
+                    const enc = datagram.encode(0x01, fr[0..n.?], &sync_tmp.data);
+                    if (enc != datagram.OK) {
+                        frame.x0 = 1;
+                    } else {
+                        const raw: [*]const volatile u8 = @ptrCast(&sync_tmp.data);
+                        const total: u64 = datagram.HEADER_LEN + @as(u64, @intCast(n.?)) + datagram.CRC_LEN;
+                        frame.x0 = datagram.txEnqueue(raw, total);
+                        if (frame.x0 == datagram.OK) uart.line("gringots SOS OK");
+                    }
+                }
+            }
+        },
+        SYS_GRINGOTS_VERIFY => {
+            const raw: [*]const u8 = @ptrFromInt(frame.x1);
+            frame.x0 = agent.verifyVerdict(raw[0..frame.x2]);
+        },
+        SYS_GRINGOTS_DESCRIBE => {
+            const raw: [*]const u8 = @ptrFromInt(frame.x1);
+            const out: *DescOut = @ptrFromInt(frame.x3);
+            const n = agent.describeFrame(raw[0..frame.x2], out.text[0..]);
             if (n == null) {
                 frame.x0 = 1;
             } else {
-                const enc = datagram.encode(0x01, fr[0..n.?], &sync_tmp.data);
+                out.len = n.?;
+                frame.x0 = 0;
+            }
+        },
+        SYS_GRINGOTS_SEND => {
+            const raw: [*]const u8 = @ptrFromInt(frame.x1);
+            const bytes = raw[0..frame.x2];
+            if (agent.sendCheck(bytes) != agent.S_OK) {
+                frame.x0 = 1;
+            } else {
+                const enc = datagram.encode(0x01, bytes, &sync_tmp.data);
                 if (enc != datagram.OK) {
                     frame.x0 = 1;
                 } else {
-                    const raw: [*]const volatile u8 = @ptrCast(&sync_tmp.data);
-                    const total: u64 = datagram.HEADER_LEN + @as(u64, @intCast(n.?)) + datagram.CRC_LEN;
-                    frame.x0 = datagram.txEnqueue(raw, total);
-                    if (frame.x0 == datagram.OK) uart.line("gringots SOS OK");
+                    const vol: [*]const volatile u8 = @ptrCast(&sync_tmp.data);
+                    const total: u64 = datagram.HEADER_LEN + @as(u64, @intCast(bytes.len)) + datagram.CRC_LEN;
+                    frame.x0 = datagram.txEnqueue(vol, total);
+                    if (frame.x0 == datagram.OK) uart.line("gringots send OK");
                 }
             }
         },
@@ -717,6 +818,9 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 17), SYS_GRINGOTS_ACK);
     try testing.expectEqual(@as(u64, 18), SYS_GRINGOTS_STATUS);
     try testing.expectEqual(@as(u64, 19), SYS_GRINGOTS_MINT_UNIQUE);
+    try testing.expectEqual(@as(u64, 20), SYS_GRINGOTS_VERIFY);
+    try testing.expectEqual(@as(u64, 21), SYS_GRINGOTS_DESCRIBE);
+    try testing.expectEqual(@as(u64, 22), SYS_GRINGOTS_SEND);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
     try testing.expectEqual(@as(usize, 800), frame_abi.size);
 }

@@ -5,7 +5,9 @@
 //! round trip needs no cross-boot persistence yet (real identity rotation
 //! and Gringots-owned storage arrive with `gringotsd` proper).
 
+const std = @import("std");
 const ed = @import("ed25519.zig");
+const frame = @import("frame.zig");
 const msg = @import("msg.zig");
 const replay = @import("replay_cache.zig");
 
@@ -94,6 +96,49 @@ pub fn verifyAckStageCached(raw: []const u8, cache: *replay.Cache) u8 {
     return ACK_OK;
 }
 
+/// Local verdict for VERIFY_FRAME (no transmission, no state change).
+pub const V_OK: u8 = 0;
+pub const V_MALFORMED: u8 = 1;
+pub const V_TIME: u8 = 2;
+pub const V_BAD_SIG: u8 = 3;
+pub const V_SEMANTICS: u8 = 4;
+
+pub fn verifyVerdict(raw: []const u8) u8 {
+    return verifyVerdictAt(raw, T0);
+}
+
+pub fn verifyVerdictAt(raw: []const u8, now: u64) u8 {
+    _ = msg.verifyFrame(raw, now) catch |err| {
+        return switch (err) {
+            error.Expired, error.NotYetValid, error.BadTimeWindow, error.TtlTooLong => V_TIME,
+            error.SignatureVerificationFailed => V_BAD_SIG,
+            error.LocationInSos, error.LocationRequired, error.SessionRequired, error.RefRequired => V_SEMANTICS,
+            else => V_MALFORMED,
+        };
+    };
+    return V_OK;
+}
+
+/// DESCRIBE_FRAME: structure-only text, unverified. Returns text length,
+/// or null when the frame does not parse or the output is too small.
+pub fn describeFrame(raw: []const u8, out: []u8) ?usize {
+    const dec = frame.decodeFrame(raw) catch return null;
+    const m = msg.parseBody(dec.body) catch return null;
+    const text = msg.formatDebug(&m, out) catch return null;
+    return text.len;
+}
+
+/// SEND_FRAME gate: shape-check only (the bridge transmits). Matches the
+/// host `service_ipc.sendFrame` rule: nonempty, <= 521 B, decodes.
+pub const S_OK: u8 = 0;
+pub const S_BAD: u8 = 1;
+
+pub fn sendCheck(raw: []const u8) u8 {
+    if (raw.len == 0 or raw.len > 521) return S_BAD;
+    _ = frame.decodeFrame(raw) catch return S_BAD;
+    return S_OK;
+}
+
 test {
     _ = @import("replay_cache.zig");
 }
@@ -128,4 +173,49 @@ test "mint then verify-ack round trip with receiver-style ACK" {
     try testing.expect(verifyAck(awire));
     // Replay of the same ACK must fail.
     try testing.expect(!verifyAck(awire));
+}
+
+test "verdict classes, describe text, send gate" {
+    const testing = std.testing;
+    resetForTests();
+    var fr: [521]u8 = undefined;
+    const n = mintSos(&fr) orelse return error.MintFailed;
+    const sos = fr[0..n];
+    try testing.expectEqual(V_OK, verifyVerdict(sos));
+
+    // Expired copy: re-mint with short TTL, verify late.
+    const kp = ed.keypairFromSeed(GUEST_SEED) catch unreachable;
+    const short = msg.Builder{
+        .msg_type = .sos,
+        .ephemeral_id = kp.public_key.toBytes(),
+        .timestamp = T0,
+        .expires = T0 + 10,
+        .nonce = SOS_NONCE,
+    };
+    var sbody: [512]u8 = undefined;
+    var sfr: [521]u8 = undefined;
+    const swire = try msg.signAndFrame(&short, kp, &sbody, &sfr);
+    try testing.expectEqual(V_TIME, verifyVerdictAt(swire, T0 + 1000));
+
+    // Corrupted signature (reframed): BAD_SIG.
+    const dec = try frame.decodeFrame(sos);
+    var body2: [512]u8 = undefined;
+    @memcpy(body2[0..dec.body.len], dec.body);
+    body2[dec.body.len - 1] ^= 0x01;
+    var reframed: [521]u8 = undefined;
+    const rw = try frame.encodeFrame(body2[0..dec.body.len], &reframed);
+    try testing.expectEqual(V_BAD_SIG, verifyVerdict(rw));
+
+    // Garbage: MALFORMED. Empty send: BAD.
+    try testing.expectEqual(V_MALFORMED, verifyVerdict("not a frame"));
+    try testing.expectEqual(S_BAD, sendCheck(&[_]u8{}));
+    var big = [_]u8{0} ** 522;
+    try testing.expectEqual(S_BAD, sendCheck(&big));
+    try testing.expectEqual(S_OK, sendCheck(sos));
+
+    // Describe: verified prefix on valid, null on garbage.
+    var text: [512]u8 = undefined;
+    const tlen = describeFrame(sos, &text) orelse return error.DescribeFailed;
+    try testing.expect(std.mem.startsWith(u8, text[0..tlen], "GRINGOTTS/1 TYPE=CIVILIAN_SOS"));
+    try testing.expect(describeFrame("garbage-bytes!!", &text) == null);
 }

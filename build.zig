@@ -1607,7 +1607,7 @@ pub fn build(b: *std.Build) void {
     qemu_aarch64.setCwd(b.path("."));
     qemu_aarch64.addArg(
         \\set -e
-        \\rm -f zig-out/host-rx.dat
+        \\rm -f zig-out/host-rx.dat zig-out/gringots-store.dat
         \\qemu-system-aarch64 \
         \\  -M virt \
         \\  -cpu cortex-a72 \
@@ -1632,6 +1632,7 @@ pub fn build(b: *std.Build) void {
         \\grep -q "datagram reject OK" zig-out/aarch64-boot.log || { echo DATAGRAM REJECT MISSING; exit 1; }
         \\grep -q "crypto OK" zig-out/aarch64-boot.log || { echo CRYPTO MISSING; exit 1; }
         \\grep -q "gringots SOS OK" zig-out/aarch64-boot.log || { echo SOS MISSING; exit 1; }
+        \\grep -q "gringots send OK" zig-out/aarch64-boot.log || { echo SEND MISSING; exit 1; }
         \\grep -q "bridge TX file OK" zig-out/aarch64-boot.log || { echo BRIDGE TX MISSING; exit 1; }
         \\grep -q "hello service EL0" zig-out/aarch64-boot.log || { echo HELLO START MISSING; exit 1; }
         \\grep -q "hello service done" zig-out/aarch64-boot.log || { echo HELLO DONE MISSING; exit 1; }
@@ -1673,7 +1674,7 @@ pub fn build(b: *std.Build) void {
     bridge_run1.setCwd(b.path("."));
     bridge_run1.addArg(
         \\set -e
-        \\rm -f zig-out/host-rx.dat zig-out/guest-tx.dat
+        \\rm -f zig-out/host-rx.dat zig-out/guest-tx.dat zig-out/gringots-store.dat
         \\qemu-system-aarch64 \
         \\  -M virt \
         \\  -cpu cortex-a72 \
@@ -1711,6 +1712,7 @@ pub fn build(b: *std.Build) void {
         \\cat zig-out/aarch64-bridge.log
         \\grep -q "crypto OK" zig-out/aarch64-bridge.log || { echo CRYPTO MISSING; exit 1; }
         \\grep -q "gringots SOS OK" zig-out/aarch64-bridge.log || { echo SOS MISSING; exit 1; }
+        \\grep -q "gringots send OK" zig-out/aarch64-bridge.log || { echo SEND MISSING; exit 1; }
         \\grep -q "bridge RX file OK" zig-out/aarch64-bridge.log || { echo BRIDGE RX MISSING; exit 1; }
         \\grep -q "ACK OK" zig-out/aarch64-bridge.log || { echo ACK MISSING; exit 1; }
         \\grep -q "Zinux init exit" zig-out/aarch64-bridge.log || { echo INIT EXIT MISSING; exit 1; }
