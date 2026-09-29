@@ -1340,12 +1340,6 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     host_test_mod.addImport("aarch64_semihost_file", aarch64_semihost_file_host_mod);
-    const aarch64_gringots_host_mod = b.createModule(.{
-        .root_source_file = b.path("kernel/arch/aarch64/gringots/selftest.zig"),
-        .target = b.graph.host,
-        .optimize = .Debug,
-    });
-    host_test_mod.addImport("aarch64_gringots_selftest", aarch64_gringots_host_mod);
     // ARM64-ELF-varmennin: oma moduuli työkalulle + testeille (ei
     // host_test_mod-tuontia — sama tiedosto kahdessa moduulissa on virhe).
     const aarch64_verify_host_mod = b.createModule(.{
@@ -1626,6 +1620,7 @@ pub fn build(b: *std.Build) void {
         \\grep -q "datagram TX OK" zig-out/aarch64-boot.log || { echo DATAGRAM TX MISSING; exit 1; }
         \\grep -q "datagram reject OK" zig-out/aarch64-boot.log || { echo DATAGRAM REJECT MISSING; exit 1; }
         \\grep -q "crypto OK" zig-out/aarch64-boot.log || { echo CRYPTO MISSING; exit 1; }
+        \\grep -q "gringots SOS OK" zig-out/aarch64-boot.log || { echo SOS MISSING; exit 1; }
         \\grep -q "bridge TX file OK" zig-out/aarch64-boot.log || { echo BRIDGE TX MISSING; exit 1; }
         \\grep -q "hello service EL0" zig-out/aarch64-boot.log || { echo HELLO START MISSING; exit 1; }
         \\grep -q "hello service done" zig-out/aarch64-boot.log || { echo HELLO DONE MISSING; exit 1; }
@@ -1646,19 +1641,20 @@ pub fn build(b: *std.Build) void {
     const aarch64_verify_step = b.step("aarch64-verify", "Verify ARM64 guest ELF without QEMU");
     aarch64_verify_step.dependOn(&run_aarch64_verify.step);
 
-    // --- File-shim-silta (Phase 4 setup): guest TX-tiedosto -> vastaus ----
+    // --- File-bridge (Phase 4): guest SOS-tiedosto -> aito ACK --------
     // Sama moduuli exelle ja testeille (kahdessa moduulissa sama
-    // juuritiedosto on Zig 0.16:ssa virhe).
-    const shim_mod = b.createModule(.{
-        .root_source_file = b.path("tools/datagram_shim.zig"),
+    // juuritiedosto on Zig 0.16:ssa virhe). Tämä moduuli ajaa myös koko
+    // vendoroidun Gringots-katraan testit (agent + selftest tuovat loput).
+    const bridge_tool_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/aarch64/gringots/bridge_tool.zig"),
         .target = b.graph.host,
         .optimize = .Debug,
     });
-    const shim_tests = b.addTest(.{ .root_module = shim_mod });
-    run_host_tests.dependOn(&b.addRunArtifact(shim_tests).step);
-    const shim_exe = b.addExecutable(.{
-        .name = "zinux-datagram-shim",
-        .root_module = shim_mod,
+    const bridge_tool_tests = b.addTest(.{ .root_module = bridge_tool_mod });
+    run_host_tests.dependOn(&b.addRunArtifact(bridge_tool_tests).step);
+    const bridge_tool_exe = b.addExecutable(.{
+        .name = "zinux-file-bridge",
+        .root_module = bridge_tool_mod,
     });
 
     // Boot 1: kirjoita TX-tiedosto (ei RX-tiedostoa -> SYNC_IN on NOT_FOUND).
@@ -1681,8 +1677,8 @@ pub fn build(b: *std.Build) void {
         \\test -f zig-out/guest-tx.dat || { echo TX FILE MISSING; exit 1; }
     );
     bridge_run1.step.dependOn(&install_aarch64.step);
-    // Shim: validoi TX-kehys, kirjoita CAN-vastaus.
-    const run_shim = b.addRunArtifact(shim_exe);
+    // Bridge: verifioi SOS, kirjoita aito ACK.
+    const run_shim = b.addRunArtifact(bridge_tool_exe);
     run_shim.setCwd(b.path("."));
     run_shim.step.dependOn(&bridge_run1.step);
     // Boot 2: guest lukee vastauksen ja validoi sen.
@@ -1703,7 +1699,9 @@ pub fn build(b: *std.Build) void {
         \\  -kernel zig-out/bin/zinux-aarch64
         \\cat zig-out/aarch64-bridge.log
         \\grep -q "crypto OK" zig-out/aarch64-bridge.log || { echo CRYPTO MISSING; exit 1; }
+        \\grep -q "gringots SOS OK" zig-out/aarch64-bridge.log || { echo SOS MISSING; exit 1; }
         \\grep -q "bridge RX file OK" zig-out/aarch64-bridge.log || { echo BRIDGE RX MISSING; exit 1; }
+        \\grep -q "ACK OK" zig-out/aarch64-bridge.log || { echo ACK MISSING; exit 1; }
         \\grep -q "Zinux init exit" zig-out/aarch64-bridge.log || { echo INIT EXIT MISSING; exit 1; }
     );
     bridge_run2.step.dependOn(&run_shim.step);

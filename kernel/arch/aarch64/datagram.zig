@@ -163,6 +163,17 @@ pub fn rxDequeue(out: *Slot) u64 {
     return OK;
 }
 
+/// Operation byte of a validated datagram.
+pub fn opOf(raw: [*]const volatile u8) u8 {
+    return raw[3];
+}
+
+/// Payload length field of a validated datagram. Call only after
+/// validate() returns OK: the LEN/CRC agreement is what makes this safe.
+pub fn payloadLen(raw: [*]const volatile u8) u64 {
+    return (@as(u64, raw[4]) << 8) | raw[5];
+}
+
 /// Host-fill hook (used by tests now, by the semihosting-file RX path
 /// later). Validated like guest input: the host is not trusted either.
 pub fn rxInject(raw: [*]const volatile u8, len: u64) u64 {

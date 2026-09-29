@@ -10,6 +10,7 @@ const clock = @import("clock.zig");
 const datagram = @import("datagram.zig");
 const shfile = @import("semihost_file.zig");
 const crypto_selftest = @import("gringots/selftest.zig");
+const agent = @import("gringots/agent.zig");
 
 pub const Aarch64ExceptionFrame = frame_abi.Aarch64ExceptionFrame;
 
@@ -29,6 +30,8 @@ pub const SYS_DATAGRAM_RECV: u64 = 12;
 pub const SYS_DATAGRAM_SYNC_OUT: u64 = 13;
 pub const SYS_DATAGRAM_SYNC_IN: u64 = 14;
 pub const SYS_CRYPTO_SELFTEST: u64 = 15;
+pub const SYS_GRINGOTS_SOS: u64 = 16;
+pub const SYS_GRINGOTS_ACK: u64 = 17;
 pub const IPC_SMOKE_REQUEST: u64 = 0x49504331; // "IPC1"
 pub const IPC_SMOKE_RESPONSE: u64 = 0x49504332; // "IPC2"
 
@@ -265,9 +268,21 @@ fn el0CryptoSelftest() u64 {
     return st;
 }
 
-// Canned host reply the file-shim writes (tools/datagram_shim.zig).
-// EL0 verifies the full RX datagram against it.
-const BRIDGE_REPLY = "BRIDGE-REPLY-01";
+fn el0GringotsSos() u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_SOS),
+        : .{ .memory = true });
+    return st;
+}
+
+fn el0GringotsAck() u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_ACK),
+        : .{ .memory = true });
+    return st;
+}
 
 // Ensimmäinen oikea ARM64-userland entry. Se kulkee SVC-rajapinnan kautta.
 pub export fn aarch64_init_entry() callconv(.c) noreturn {
@@ -294,9 +309,20 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
     if (t2 < t1) el0Fail();
     if (el0Wall() != clock.NOT_READY) el0Fail();
 
+    // On-target Gringots crypto must pass before any service may use it.
+    if (el0CryptoSelftest() != 0) el0Fail();
+
+    // Mint SOS first so it sits at TX[0] for the file shim.
+    if (el0GringotsSos() != 0) el0Fail();
+
+    // File-shim hop: TX queue -> host file, host reply file -> RX queue.
+    // First boot has no reply file (NOT_FOUND is the normal case there).
+    if (el0SyncOut() != shfile.OK) el0Fail();
+
     {
-        // encode() writes every byte SEND reads; RECV fills recv_slot on
-        // success (EMPTY here, so its old contents are never read).
+        // Device demo runs after the SOS spill so TX[0] stays the SOS.
+        // RX is still empty here (sync-in runs below): EMPTY must hold.
+        // encode() writes every byte SEND reads.
         if (datagram.encode(0x01, "HELLO-DATAGRAM", &dgram_buf) != datagram.OK) el0Fail();
         const total: u64 = datagram.HEADER_LEN + 14 + datagram.CRC_LEN;
         const draw: [*]const u8 = @ptrCast(&dgram_buf);
@@ -307,24 +333,11 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
         if (el0DgramRecv(&recv_slot, datagram.SLOT) != datagram.EMPTY) el0Fail();
     }
 
-    // On-target Gringots crypto must pass before any service may use it.
-    if (el0CryptoSelftest() != 0) el0Fail();
-
-    // File-shim hop: TX queue -> host file, host reply file -> RX queue.
-    // First boot has no reply file (NOT_FOUND is the normal case there).
-    if (el0SyncOut() != shfile.OK) el0Fail();
     {
         const st = el0SyncIn();
         if (st != shfile.NOT_FOUND) {
             if (st != shfile.OK) el0Fail();
-            if (el0DgramRecv(&recv_slot, datagram.SLOT) != datagram.OK) el0Fail();
-            const want: u64 = datagram.HEADER_LEN + BRIDGE_REPLY.len + datagram.CRC_LEN;
-            if (recv_slot.len != want) el0Fail();
-            if (recv_slot.data[3] != 0x02) el0Fail();
-            var i: usize = 0;
-            while (i < BRIDGE_REPLY.len) : (i += 1) {
-                if (recv_slot.data[6 + i] != BRIDGE_REPLY[i]) el0Fail();
-            }
+            if (el0GringotsAck() != 0) el0Fail();
         }
     }
 
@@ -482,6 +495,53 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
                 frame.x0 = 1;
             }
         },
+        SYS_GRINGOTS_SOS => {
+            // Mint the deterministic demo SOS and queue it as
+            // GUEST_SOS_SEND. The file shim carries TX[0] to the host.
+            var fr: [521]u8 = undefined;
+            const n = agent.mintSos(&fr);
+            if (n == null) {
+                frame.x0 = 1;
+            } else {
+                const enc = datagram.encode(0x01, fr[0..n.?], &sync_tmp.data);
+                if (enc != datagram.OK) {
+                    frame.x0 = 1;
+                } else {
+                    const raw: [*]const volatile u8 = @ptrCast(&sync_tmp.data);
+                    const total: u64 = datagram.HEADER_LEN + @as(u64, @intCast(n.?)) + datagram.CRC_LEN;
+                    frame.x0 = datagram.txEnqueue(raw, total);
+                    if (frame.x0 == datagram.OK) uart.line("gringots SOS OK");
+                }
+            }
+        },
+        SYS_GRINGOTS_ACK => {
+            // Verify one RX datagram as the ACK to our SOS. Strips host
+            // framing first: only HOST_FRAME_DELIVER payloads reach Gringots.
+            if (datagram.rxDequeue(&rx_tmp) != datagram.OK) {
+                uart.line("ack: no rx");
+                frame.x0 = 1;
+            } else {
+                const draw: [*]const volatile u8 = @ptrCast(&rx_tmp.data);
+                if (datagram.opOf(draw) != 0x02) {
+                    uart.line("ack: not deliver");
+                    frame.x0 = 1;
+                } else {
+                    const plen = datagram.payloadLen(draw);
+                    const stage = agent.verifyAckStage(rx_tmp.data[6 .. 6 + plen]);
+                    frame.x0 = stage;
+                    switch (stage) {
+                        agent.ACK_OK => uart.line("ACK OK"),
+                        agent.ACK_NO_SOS => uart.line("ack: no sos"),
+                        agent.ACK_BAD_FRAME => uart.line("ack: bad frame"),
+                        agent.ACK_NOT_ACK => uart.line("ack: not ack"),
+                        agent.ACK_NO_REF => uart.line("ack: no ref"),
+                        agent.ACK_REF_MISMATCH => uart.line("ack: ref mismatch"),
+                        agent.ACK_REPLAY => uart.line("ack: replay"),
+                        else => uart.line("ack: unknown"),
+                    }
+                }
+            }
+        },
         SYS_DATAGRAM_RECV => {
             if (frame.x2 < datagram.SLOT) {
                 frame.x0 = datagram.TOO_LARGE;
@@ -549,6 +609,8 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 13), SYS_DATAGRAM_SYNC_OUT);
     try testing.expectEqual(@as(u64, 14), SYS_DATAGRAM_SYNC_IN);
     try testing.expectEqual(@as(u64, 15), SYS_CRYPTO_SELFTEST);
+    try testing.expectEqual(@as(u64, 16), SYS_GRINGOTS_SOS);
+    try testing.expectEqual(@as(u64, 17), SYS_GRINGOTS_ACK);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
     try testing.expectEqual(@as(usize, 800), frame_abi.size);
 }
