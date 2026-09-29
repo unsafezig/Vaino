@@ -24,6 +24,20 @@ pub const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 // tällä testataan osoitinvälitys ilman lopetussivuvaikutusta.
 pub const SYS_WRITE0: u64 = 0x04;
 
+// Semihosting SYS_TIME: hostin unix-aika sekunteina (x0:ssa paluu).
+// Vain desktop-shim: Androidilla wall-aika tulee HOST_TIME_SYNC-opilla
+// (HOST_PROTOCOL.md), ei semihostingilla.
+pub const SYS_TIME: u64 = 0x11;
+
+/// Hostin seinäkello (sekuntia epochista). Toimii EL1:ssä kuten exit().
+pub fn wallTime() u64 {
+    const secs: u64 = asm volatile ("hlt 0xF000"
+        : [secs] "={x0}" (-> u64),
+        : [nr] "{x0}" (SYS_TIME),
+        : .{ .memory = true });
+    return secs;
+}
+
 // Pysäytä QEMU annetulla koodilla — ei palaa.
 // QEMU poistuu samalla koodilla (0 = smoke OK).
 //
@@ -94,4 +108,6 @@ const testing = @import("std").testing;
 test "semihosting call numbers match spec" {
     try testing.expectEqual(@as(u64, 0x18), SYS_EXIT);
     try testing.expectEqual(@as(u64, 0x20026), ADP_EXIT);
+    try testing.expectEqual(@as(u64, 0x04), SYS_WRITE0);
+    try testing.expectEqual(@as(u64, 0x11), SYS_TIME);
 }

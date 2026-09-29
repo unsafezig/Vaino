@@ -38,6 +38,7 @@ pub const SYS_GRINGOTS_MINT_UNIQUE: u64 = 19;
 pub const SYS_GRINGOTS_VERIFY: u64 = 20;
 pub const SYS_GRINGOTS_DESCRIBE: u64 = 21;
 pub const SYS_GRINGOTS_SEND: u64 = 22;
+pub const SYS_GRINGOTS_ROTATE: u64 = 23;
 
 /// Shared EL0/kernel out-structs (single x0 status + memory results).
 pub const SosOut = struct { len: u64, frame: [521]u8 };
@@ -137,6 +138,12 @@ pub fn initProcessRecords() void {
     // so first-boot output stays stable.
     if (service.init(guest_backend) == service.INIT_LOADED) {
         uart.line("store load OK");
+    }
+    // Wall-clock drive: stamp fresh regions, rotate expired ones.
+    // Desktop wall time comes from semihosting; Android will use
+    // HOST_TIME_SYNC instead (same ROT_* contract).
+    if (service.onWallTime(semihost.wallTime()) == service.ROT_ROTATED) {
+        uart.line("identity rotated");
     }
 }
 
@@ -282,7 +289,8 @@ fn el0Wall() u64 {
         : [nr] "{x8}" (SYS_CLOCK_WALL),
           [out] "{x1}" (@intFromPtr(&v)),
         : .{ .memory = true });
-    return st;
+    if (st != clock.OK) el0Fail();
+    return v;
 }
 
 fn el0DgramSend(raw: [*]const u8, len: u64) u64 {
@@ -370,6 +378,14 @@ fn el0SendFrame(raw: [*]const u8, len: u64) u64 {
     return st;
 }
 
+fn el0Rotate() u64 {
+    const st: u64 = asm volatile ("svc #0"
+        : [st] "={x0}" (-> u64),
+        : [nr] "{x8}" (SYS_GRINGOTS_ROTATE),
+        : .{ .memory = true });
+    return st;
+}
+
 fn el0GringotsAck() u64 {
     const st: u64 = asm volatile ("svc #0"
         : [st] "={x0}" (-> u64),
@@ -427,7 +443,8 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
     const t1 = el0Mono();
     const t2 = el0Mono();
     if (t2 < t1) el0Fail();
-    if (el0Wall() != clock.NOT_READY) el0Fail();
+    // Wall time must be sane (later than 2024-01-01, no upper bound).
+    if (el0Wall() < 1704067200) el0Fail();
 
     // On-target Gringots crypto must pass before any service may use it.
     if (el0CryptoSelftest() != 0) el0Fail();
@@ -490,6 +507,11 @@ pub export fn aarch64_init_entry() callconv(.c) noreturn {
             if (status_a.bits & 1 == 0) el0Fail();
         }
     }
+
+    // On-demand rotation starts a fresh epoch: SOS state clears.
+    if (el0Rotate() != 0) el0Fail();
+    if (el0Status(&status_b) != 0) el0Fail();
+    if (status_b.bits & 2 != 0) el0Fail();
 
     asm volatile ("mov x8, #2; svc #0" ::: .{ .memory = true });
 
@@ -569,12 +591,12 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
             frame.x0 = clock.OK;
         },
         SYS_CLOCK_WALL => {
-            var v: u64 = 0;
-            const st = clock.wall(&v);
+            // Desktop-shim wall time via semihosting SYS_TIME. (Android
+            // will deliver wall time through HOST_TIME_SYNC instead.)
             const out: *u64 = @ptrFromInt(frame.x1);
-            out.* = v;
-            frame.x0 = st;
-            if (st == clock.NOT_READY) uart.line("clock OK");
+            out.* = semihost.wallTime();
+            frame.x0 = clock.OK;
+            uart.line("clock OK");
         },
         SYS_DATAGRAM_SEND => {
             if (frame.x2 > datagram.SLOT) {
@@ -687,6 +709,13 @@ pub export fn aarch64_exception_sync(frame: *Aarch64ExceptionFrame) void {
                 out.len = n.?;
                 frame.x0 = 0;
             }
+        },
+        SYS_GRINGOTS_ROTATE => {
+            // On-demand rotation: fresh epoch now. Used by the EL0 demo
+            // after the ACK flow; production triggers via onWallTime.
+            service.rotateNow(semihost.wallTime());
+            uart.line("identity rotated");
+            frame.x0 = 0;
         },
         SYS_GRINGOTS_SEND => {
             const raw: [*]const u8 = @ptrFromInt(frame.x1);
@@ -821,6 +850,7 @@ test "minimal ARM64 syscall ABI is stable" {
     try testing.expectEqual(@as(u64, 20), SYS_GRINGOTS_VERIFY);
     try testing.expectEqual(@as(u64, 21), SYS_GRINGOTS_DESCRIBE);
     try testing.expectEqual(@as(u64, 22), SYS_GRINGOTS_SEND);
+    try testing.expectEqual(@as(u64, 23), SYS_GRINGOTS_ROTATE);
     try testing.expectEqual(@as(u64, 0x49504332), IPC_SMOKE_RESPONSE);
     try testing.expectEqual(@as(usize, 800), frame_abi.size);
 }

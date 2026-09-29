@@ -28,6 +28,7 @@ const agent = @import("agent.zig");
 const ed = @import("ed25519.zig");
 const msg = @import("msg.zig");
 const replay = @import("replay_cache.zig");
+const types = @import("types.zig");
 
 /// All storage goes through here (offsets/counts are this module's own
 /// layout constants below). The guest wires `storage.zig` + semihosting
@@ -57,6 +58,10 @@ pub const FLAG_ACKED: u64 = 1;
 
 pub const INIT_FRESH: u8 = 0;
 pub const INIT_LOADED: u8 = 1;
+
+pub const ROT_OK: u8 = 0;
+pub const ROT_STAMPED: u8 = 1;
+pub const ROT_ROTATED: u8 = 2;
 
 var inited: bool = false;
 var be: Backend = undefined;
@@ -178,6 +183,45 @@ fn splitmix(state: *u64) u64 {
     z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
     z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
     return z ^ (z >> 31);
+}
+
+/// Drive identity against wall time. Fresh regions get stamped;
+/// expired or backwards clocks start a new epoch (fresh stream-derived
+/// seed, acked + SOS state cleared, replay ring kept). Returns
+/// ROT_OK / ROT_STAMPED / ROT_ROTATED. No-op before init.
+pub fn onWallTime(wall: u64) u8 {
+    if (!inited) return ROT_OK;
+    const created = readU64(OFF_CREATED);
+    if (created == 0) {
+        writeU64(OFF_CREATED, wall);
+        persist();
+        return ROT_STAMPED;
+    }
+    if (wall >= created and wall - created < types.IDENTITY_LIFETIME_S) return ROT_OK;
+    rotateEpoch(wall);
+    return ROT_ROTATED;
+}
+
+/// On-demand rotation (fresh epoch now, regardless of expiry).
+pub fn rotateNow(wall: u64) void {
+    rotateEpoch(wall);
+}
+
+fn rotateEpoch(wall: u64) void {
+    var st = readU64(OFF_STREAM);
+    var seed: [32]u8 = undefined;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        std.mem.writeInt(u64, seed[i * 8 ..][0..8], splitmix(&st), .little);
+    }
+    writeU64(OFF_STREAM, st);
+    writeBytes(OFF_SEED, &seed);
+    writeU64(OFF_CREATED, wall);
+    writeU64(OFF_FLAGS, readU64(OFF_FLAGS) & ~FLAG_ACKED);
+    writeU64(OFF_SOS_COUNT, 0);
+    var z16: [16]u8 = [_]u8{0} ** 16;
+    writeBytes(OFF_LAST_NONCE, &z16);
+    persist();
 }
 
 /// Mint the deterministic demo SOS (bridge path) and record it.
@@ -317,4 +361,45 @@ test "restart loads state: counter, acked, replay and nonce survive" {
     mintUnique(&c);
     mintUnique(&d);
     try testing.expect(!std.mem.eql(u8, &c, &d));
+}
+
+test "wall clock stamps fresh regions, rotates after lifetime" {
+    const testing = std.testing;
+    const T: u64 = 1798675200;
+    tResetRegion();
+    resetForTests();
+    t_has_file = false;
+    _ = init(t_be);
+    // Fresh region stamps silently.
+    try testing.expectEqual(ROT_STAMPED, onWallTime(T));
+    try testing.expectEqual(T, readU64(OFF_CREATED));
+    // Within lifetime: no rotation, seed stable.
+    var s0: [32]u8 = undefined;
+    readBytes(OFF_SEED, &s0);
+    try testing.expectEqual(ROT_OK, onWallTime(T + types.IDENTITY_LIFETIME_S - 1));
+    var s1: [32]u8 = undefined;
+    readBytes(OFF_SEED, &s1);
+    try testing.expectEqualSlices(u8, &s0, &s1);
+    // Past lifetime: new epoch (seed, created, cleared ack/SOS state).
+    var demofr: [521]u8 = undefined;
+    _ = createDemoSos(&demofr) orelse return error.MintFailed;
+    try testing.expectEqual(ROT_ROTATED, onWallTime(T + types.IDENTITY_LIFETIME_S));
+    var s2: [32]u8 = undefined;
+    readBytes(OFF_SEED, &s2);
+    try testing.expect(!std.mem.eql(u8, &s1, &s2));
+    try testing.expectEqual(T + types.IDENTITY_LIFETIME_S, readU64(OFF_CREATED));
+    const st = status();
+    try testing.expect(st.bits & 1 == 0);
+    try testing.expect(st.bits & 2 == 0);
+    // Backwards clock also rotates.
+    try testing.expectEqual(ROT_ROTATED, onWallTime(T));
+    var s2b: [32]u8 = undefined;
+    readBytes(OFF_SEED, &s2b);
+    // Rotation survives restart with the newest seed.
+    resetForTests();
+    tResetRegion();
+    try testing.expectEqual(INIT_LOADED, init(t_be));
+    var s3: [32]u8 = undefined;
+    readBytes(OFF_SEED, &s3);
+    try testing.expectEqualSlices(u8, &s2b, &s3);
 }

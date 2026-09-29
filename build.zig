@@ -1633,6 +1633,7 @@ pub fn build(b: *std.Build) void {
         \\grep -q "crypto OK" zig-out/aarch64-boot.log || { echo CRYPTO MISSING; exit 1; }
         \\grep -q "gringots SOS OK" zig-out/aarch64-boot.log || { echo SOS MISSING; exit 1; }
         \\grep -q "gringots send OK" zig-out/aarch64-boot.log || { echo SEND MISSING; exit 1; }
+        \\grep -q "identity rotated" zig-out/aarch64-boot.log || { echo ROTATE MISSING; exit 1; }
         \\grep -q "bridge TX file OK" zig-out/aarch64-boot.log || { echo BRIDGE TX MISSING; exit 1; }
         \\grep -q "hello service EL0" zig-out/aarch64-boot.log || { echo HELLO START MISSING; exit 1; }
         \\grep -q "hello service done" zig-out/aarch64-boot.log || { echo HELLO DONE MISSING; exit 1; }
@@ -1713,6 +1714,7 @@ pub fn build(b: *std.Build) void {
         \\grep -q "crypto OK" zig-out/aarch64-bridge.log || { echo CRYPTO MISSING; exit 1; }
         \\grep -q "gringots SOS OK" zig-out/aarch64-bridge.log || { echo SOS MISSING; exit 1; }
         \\grep -q "gringots send OK" zig-out/aarch64-bridge.log || { echo SEND MISSING; exit 1; }
+        \\grep -q "identity rotated" zig-out/aarch64-bridge.log || { echo ROTATE MISSING; exit 1; }
         \\grep -q "bridge RX file OK" zig-out/aarch64-bridge.log || { echo BRIDGE RX MISSING; exit 1; }
         \\grep -q "ACK OK" zig-out/aarch64-bridge.log || { echo ACK MISSING; exit 1; }
         \\grep -q "Zinux init exit" zig-out/aarch64-bridge.log || { echo INIT EXIT MISSING; exit 1; }
