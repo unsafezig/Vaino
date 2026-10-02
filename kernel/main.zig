@@ -51,6 +51,8 @@ const scheduler = @import("sched/scheduler.zig");
 extern var early_stack: [16 * 1024]u8 align(16);
 
 // Limine siirtyy tähän — aseta pino ja kutsu kmain.
+// "Tulkoon valo. Ja valo tuli."
+// 1. Moos. 1:3
 pub export fn _start() callconv(.c) noreturn {
     // Laske pinon yläreuna (kasvaa alaspäin x86_64:ssä).
     const stack_top = @intFromPtr(&early_stack) + early_stack.len;
