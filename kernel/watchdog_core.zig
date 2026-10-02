@@ -196,6 +196,8 @@ pub fn recordCrash(pid: u64) bool {
 }
 
 // Kaapattujen crashien määrä — null jos ei valvota.
+// "Vaikka hän seitsemästi kaatuisi, hän nousee jälleen."
+// Sananl. 24:16
 pub fn crashCount(pid: u64) ?u32 {
     // Hae paikka.
     const slot = slotByPid(pid) orelse return null;
