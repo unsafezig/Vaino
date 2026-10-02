@@ -235,6 +235,8 @@ const ckpt = @import("snapshot_ckpt_core");
 
 // Checkpoint-virheet — dispatch kartoittaa errnoiksi (Truncated/HasHuge →
 // EINVAL: viallinen kohde; NoMemory/TableFull → ENOMEM: resurssit loppu).
+// "Minä teen kaiken uudeksi."
+// Ilm. 21:5
 pub const CkptError = error{
     // Ei per-process PML4:ää (jaettu/nolla-taulu).
     NoPageTable,
