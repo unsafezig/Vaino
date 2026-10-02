@@ -117,7 +117,8 @@ pub fn rightsIntersect(a: Rights, b: Rights) Rights {
 }
 
 // Vaihe 29.1 — Rights-maskiapurit plugin-scopelle (ei kiertoa scope.zig:iin).
-//
+// "Älkää ylittäkö sitä, mikä on kirjoitettu."
+// 1. Kor. 4:6
 // **Vastuu**: Muunna Rights ↔ u32 ja tarkista scope-ehto ilman scope-importtia.
 // **Miksi täällä**: scope.zig on riippuvuudeton; tämä pitää bittilayoutin yhdessä
 //   paikassa kernelin puolella. Bitit täsmäävät cap_syscall_core.MASK_*.
