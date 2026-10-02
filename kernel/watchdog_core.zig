@@ -37,6 +37,8 @@ pub const Watched = struct {
 };
 
 // Kiinteä valvontataulukko — ei allokaatiota.
+// "Minä en nuku enkä torku."
+// Ps. 121:4
 var watched: [MAX_WATCHED]Watched = undefined;
 // Onko taulukko nollattu.
 var watched_init: bool = false;
