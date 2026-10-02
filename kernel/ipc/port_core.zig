@@ -123,6 +123,8 @@ fn getPort(port_id: u32) ?*Port {
 }
 
 // Lähetä viesti porttiin (enqueue).
+// "Niin kuin te tahdotte ihmisten tekevän teille, niin tehkää te heille."
+// Luuk. 6:31
 pub fn send(port_id: u32, payload: []const u8) PortError!usize {
     // Vaadi alustus.
     if (!initialized) return error.NotInitialized;
