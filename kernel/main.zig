@@ -4,6 +4,8 @@
 //! **Riippuvuudet**: boot, arch, mm, lib
 //! **Käytetään**: Limine lataa tämän ELF-binäärin
 
+// "Alussa Jumala loi taivaan ja maan."
+// 1. Moos. 1:1
 // Tuo early boot -alustus (UART ennen Limine-validointia).
 const boot = @import("boot/entry.zig");
 // Tuo Limine request -ankkuri (linksection .limine_requests).
