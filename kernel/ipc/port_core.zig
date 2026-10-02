@@ -217,6 +217,8 @@ pub fn flushQueue(port_id: u32) PortError!u8 {
 }
 
 // Tuhoa portti — tyhjentää jonon.
+// "Minun sieluni janoaa Jumalaa."
+// Ps. 42:3
 pub fn destroyPort(port_id: u32) bool {
     // Hae portti.
     const p = getPort(port_id) orelse return false;
