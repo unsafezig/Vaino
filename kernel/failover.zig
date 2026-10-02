@@ -130,6 +130,8 @@ pub const Cluster = struct {
 };
 
 // Replikatila — missä palvelu palvelee nyt.
+// "Minä olen sinun kanssasi ja varjelen sinua, minne ikinä menetkin."
+// 1. Moos. 28:15
 pub const ReplicaState = enum(u2) {
     // Seuranta, ei korvausta (koti elää).
     primary = 0,
