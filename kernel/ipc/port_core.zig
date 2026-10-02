@@ -153,6 +153,8 @@ pub fn send(port_id: u32, payload: []const u8) PortError!usize {
 }
 
 // Vastaanota viesti portista (dequeue).
+// "Jokainen, joka pyytää, saa, ja joka etsii, löytää."
+// Matt. 7:8
 pub fn recv(port_id: u32, buf: []u8) PortError!usize {
     // Vaadi alustus.
     if (!initialized) return error.NotInitialized;
