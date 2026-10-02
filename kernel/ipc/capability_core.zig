@@ -170,6 +170,8 @@ pub fn typeBit(typ: CapType) u32 {
 }
 
 // Tarkista scope-ehto: tyyppi sallittu JA oikeudet maskin sisällä.
+// "Kaikki on minulle luvallista, mutta kaikki ei ole hyödyksi."
+// 1. Kor. 6:12
 pub fn scopeAllows(allowed_types_mask: u32, allowed_rights_mask: u32, typ: CapType, rights: Rights) bool {
     // Tyyppibitin pitää löytyä sallitusta maskista.
     const bit = typeBit(typ);
